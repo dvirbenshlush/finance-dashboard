@@ -1,0 +1,10 @@
+node_modules/
+client/node_modules/
+server/node_modules/
+server/dist/
+client/dist/
+.env
+server/.env
+server/data/transactions.json
+server/data/portfolio.json
+.claude/
