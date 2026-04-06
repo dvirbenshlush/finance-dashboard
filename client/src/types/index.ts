@@ -57,6 +57,18 @@ export interface Asset {
   savingsType?: 'pension' | 'keren_hishtalmut' | 'other';
 }
 
+export interface MortgageTrack {
+  id: string;
+  name: string;           // e.g. "פריים", "קבוע", "קל\"צ"
+  trackType: 'prime' | 'fixed' | 'cpi' | 'variable' | 'other';
+  principal: number;
+  outstanding: number;
+  interestRate: number;
+  monthlyPayment: number;
+  monthsTotal: number;
+  monthsRemaining: number;
+}
+
 export interface Loan {
   id: string;
   name: string;
@@ -68,6 +80,9 @@ export interface Loan {
   monthlyPayment: number;
   propertyValue?: number;
   linkedAssetId?: string;
+  tracks?: MortgageTrack[];
+  termMonths?: number;    // total loan term in months
+  startDate?: string;     // YYYY-MM-DD
 }
 
 export interface Portfolio {
