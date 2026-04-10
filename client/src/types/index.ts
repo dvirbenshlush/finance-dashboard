@@ -101,6 +101,37 @@ export interface MonthlyData {
   balance: number;
 }
 
+// ---- Capital Markets ----
+export interface StockTransaction {
+  id: string;
+  date: string;          // YYYY-MM-DD
+  symbol: string;        // e.g. VOO, AAPL, IBIT
+  name?: string;         // company / fund name
+  action: 'buy' | 'sell' | 'dividend' | 'fee' | 'interest' | 'other';
+  quantity?: number;
+  price?: number;        // price per unit
+  amount: number;        // always positive; action determines direction
+  currency: string;      // USD | ILS | EUR
+}
+
+export interface PortfolioInsight {
+  title: string;
+  description: string;
+  severity: 'low' | 'medium' | 'high';
+}
+
+export interface PortfolioRecommendation {
+  title: string;
+  description: string;
+  priority: 'high' | 'medium' | 'low';
+}
+
+export interface PortfolioAIAnalysis {
+  summary: string;
+  insights: PortfolioInsight[];
+  recommendations: PortfolioRecommendation[];
+}
+
 export interface GeminiInsight {
   type: 'anomaly' | 'tip' | 'freedom_tracker';
   title: string;

@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { classifyBatch } from '../llm/command-classification';
 
 const router = Router();
 
@@ -63,46 +64,23 @@ router.post('/categorize', async (req: Request, res: Response) => {
 
   if (!transactions?.length) { res.json([]); return; }
 
-  console.log(`[Groq] Categorizing ${transactions.length} transactions`);
+  console.log(`[Groq] Categorizing ${transactions.length} transactions via command-classification`);
 
-  const BATCH = 20;
-  const results: { id: string; category: string }[] = [];
+  try {
+    const classified = await classifyBatch(
+      apiKey,
+      transactions.map(tx => ({ id: tx.id, description: tx.description, amount: tx.amount })),
+      [],
+      (done, total) => console.log(`[Groq] ${done}/${total} classified`),
+    );
 
-  for (let i = 0; i < transactions.length; i += BATCH) {
-    if (i > 0) await new Promise(r => setTimeout(r, 1500));
-    const batch = transactions.slice(i, i + BATCH);
-    // Use short indices in the prompt to minimize tokens; map back to real IDs after
-    const lines = batch.map((tx, idx) => `${idx} ${tx.amount} ${tx.description}`).join('\n');
-
-    const prompt = `Categorize Israeli bank transactions. Return JSON only: {"0":"category","1":"category",...}
-
-Categories: salary rental_income refund transfer_in mortgage rent_paid home_expenses groceries food_restaurant car public_transport subscriptions utilities health shopping education entertainment travel investment other
-
-Rules: base decision on description text only. "העברת מ"=transfer_in, "משכורת"/"שכר"=salary, "הפקדת שיק"=refund, "קבלת תשלום"=transfer_in, rent received=rental_income, rent paid=rent_paid, unknown=other.
-
-Transactions (index amount description):
-${lines}`;
-
-    try {
-      const text = await callGroq(apiKey, prompt, true);
-      console.log(`[Groq] Response (first 200 chars):`, text.slice(0, 200));
-      const parsed = extractJSON<Record<string, string>>(text);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        for (const [idx, category] of Object.entries(parsed)) {
-          const tx = batch[parseInt(idx)];
-          if (tx) results.push({ id: tx.id, category });
-        }
-        console.log(`[Groq] Parsed ${Object.keys(parsed).length} categories`);
-      } else {
-        console.error('[Groq] Failed to parse response:', text.slice(0, 300));
-      }
-    } catch (err) {
-      console.error('[Groq] Batch error:', err);
-    }
+    const results = classified.map(r => ({ id: r.id, category: r.category }));
+    console.log(`[Groq] Returning ${results.length} results`);
+    res.json(results);
+  } catch (err) {
+    console.error('[Groq] Classify error:', err);
+    res.status(500).json({ error: String(err) });
   }
-
-  console.log(`[Groq] Returning ${results.length} results`);
-  res.json(results);
 });
 
 // POST /api/gemini/analyze

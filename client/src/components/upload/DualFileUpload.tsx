@@ -2,6 +2,7 @@ import { type FC, useRef, useState } from 'react';
 import type { BankSource, Transaction } from '../../types';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
+import { api } from '../../services/api';
 
 interface DualFileUploadProps {
   onTransactionsLoaded: (transactions: Transaction[]) => void;
@@ -141,7 +142,7 @@ interface UploadZoneProps {
   icon: string;
   accentClass: string;
   bankOptions: { value: BankSource; label: string }[];
-  onParsed: (txs: Transaction[], fileName: string, cols: string[]) => void;
+  onParsed: (txs: Transaction[], fileName: string, cols: string[], file: File) => void;
 }
 
 const UploadZone: FC<UploadZoneProps> = ({ title, subtitle, icon, accentClass, bankOptions, onParsed }) => {
@@ -167,7 +168,7 @@ const UploadZone: FC<UploadZoneProps> = ({ title, subtitle, icon, accentClass, b
           rows = parseXlsxWithSmartHeader(sheet);
         }
         if (rows.length > 0) cols = Object.keys(rows[0]);
-        onParsed(parseRows(rows, selectedBank), file.name, cols);
+        onParsed(parseRows(rows, selectedBank), file.name, cols, file);
       } catch {/* ignore */}
     };
     isCsv ? reader.readAsText(file, 'windows-1255') : reader.readAsBinaryString(file);
@@ -213,12 +214,23 @@ const UploadZone: FC<UploadZoneProps> = ({ title, subtitle, icon, accentClass, b
   );
 };
 
+// ---- LLM classify result types ----
+interface ClassifyResult {
+  id: string;
+  description: string;
+  amount: number;
+  category: string;
+  confidence: 'high' | 'medium' | 'low';
+  reasoning: string;
+}
+
 // ---- Main dual upload ----
 interface FileStatus {
   name: string;
   count: number;
   source: 'bank' | 'credit_card';
   cols: string[];
+  file: File;
 }
 
 const DualFileUpload: FC<DualFileUploadProps> = ({ onTransactionsLoaded }) => {
@@ -227,25 +239,54 @@ const DualFileUpload: FC<DualFileUploadProps> = ({ onTransactionsLoaded }) => {
   const [bankStatus, setBankStatus] = useState<FileStatus | null>(null);
   const [ccStatus, setCcStatus] = useState<FileStatus | null>(null);
 
+  // LLM classify state
+  const [classifying, setClassifying] = useState(false);
+  const [classifyError, setClassifyError] = useState<string | null>(null);
+  const [classifyResults, setClassifyResults] = useState<ClassifyResult[] | null>(null);
+  const [classifySummary, setClassifySummary] = useState<Record<string, number> | null>(null);
+  const [activeFile, setActiveFile] = useState<'bank' | 'cc' | null>(null);
+
   const merge = (bank: Transaction[], cc: Transaction[]) => {
     const cleanBank = removeCreditCardPayments(bank);
-    // Deduplicate by id across both sources
     const all = [...cleanBank, ...cc];
     const seen = new Set<string>();
     const unique = all.filter((tx) => { if (seen.has(tx.id)) return false; seen.add(tx.id); return true; });
     onTransactionsLoaded(unique);
   };
 
-  const handleBank = (txs: Transaction[], name: string, cols: string[]) => {
+  const handleBank = (txs: Transaction[], name: string, cols: string[], file: File) => {
     setBankTxs(txs);
-    setBankStatus({ name, count: txs.length, source: 'bank', cols });
+    setBankStatus({ name, count: txs.length, source: 'bank', cols, file });
+    setClassifyResults(null);
+    setClassifyError(null);
     merge(txs, ccTxs);
   };
 
-  const handleCC = (txs: Transaction[], name: string, cols: string[]) => {
+  const handleCC = (txs: Transaction[], name: string, cols: string[], file: File) => {
     setCcTxs(txs);
-    setCcStatus({ name, count: txs.length, source: 'credit_card', cols });
+    setCcStatus({ name, count: txs.length, source: 'credit_card', cols, file });
+    setClassifyResults(null);
+    setClassifyError(null);
     merge(bankTxs, txs);
+  };
+
+  const handleClassify = async (source: 'bank' | 'cc') => {
+    const status = source === 'bank' ? bankStatus : ccStatus;
+    if (!status) return;
+    setClassifying(true);
+    setClassifyError(null);
+    setClassifyResults(null);
+    setActiveFile(source);
+    try {
+      const base64 = await fileToBase64(status.file);
+      const data = await api.classifyExcel(base64, status.name);
+      setClassifyResults(data.results);
+      setClassifySummary(data.summary);
+    } catch (e) {
+      setClassifyError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setClassifying(false);
+    }
   };
 
   const totalLoaded = bankTxs.length + ccTxs.length;
@@ -299,10 +340,28 @@ const DualFileUpload: FC<DualFileUploadProps> = ({ onTransactionsLoaded }) => {
       {(bankStatus || ccStatus) && (
         <div className="space-y-2">
           {bankStatus && (
-            <StatusRow icon="🏦" label={`עו"ש — ${bankStatus.name}`} count={bankStatus.count} cols={bankStatus.cols} color="text-blue-700" />
+            <div className="flex items-center justify-between gap-2">
+              <StatusRow icon="🏦" label={`עו"ש — ${bankStatus.name}`} count={bankStatus.count} cols={bankStatus.cols} color="text-blue-700" />
+              <button
+                onClick={() => handleClassify('bank')}
+                disabled={classifying}
+                className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white text-xs font-medium rounded-lg transition-colors"
+              >
+                {classifying && activeFile === 'bank' ? '⏳ מסווג...' : '🤖 סווג עם LLM'}
+              </button>
+            </div>
           )}
           {ccStatus && (
-            <StatusRow icon="💳" label={`ויזה — ${ccStatus.name}`} count={ccStatus.count} cols={ccStatus.cols} color="text-purple-700" />
+            <div className="flex items-center justify-between gap-2">
+              <StatusRow icon="💳" label={`ויזה — ${ccStatus.name}`} count={ccStatus.count} cols={ccStatus.cols} color="text-purple-700" />
+              <button
+                onClick={() => handleClassify('cc')}
+                disabled={classifying}
+                className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white text-xs font-medium rounded-lg transition-colors"
+              >
+                {classifying && activeFile === 'cc' ? '⏳ מסווג...' : '🤖 סווג עם LLM'}
+              </button>
+            </div>
           )}
           {totalLoaded > 0 && (
             <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-2 flex items-center justify-between">
@@ -311,6 +370,18 @@ const DualFileUpload: FC<DualFileUploadProps> = ({ onTransactionsLoaded }) => {
                 {ccPaymentsRemoved > 0 && ` · ${ccPaymentsRemoved} תשלומי אשראי הוסרו ממניית כפילויות`}
               </span>
             </div>
+          )}
+
+          {/* LLM classify error */}
+          {classifyError && (
+            <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-2 text-sm text-red-600">
+              ⚠️ שגיאה: {classifyError}
+            </div>
+          )}
+
+          {/* LLM classify results */}
+          {classifyResults && classifySummary && (
+            <ClassifyResultsPanel results={classifyResults} summary={classifySummary} />
           )}
         </div>
       )}
@@ -321,16 +392,86 @@ const DualFileUpload: FC<DualFileUploadProps> = ({ onTransactionsLoaded }) => {
 const StatusRow: FC<{ icon: string; label: string; count: number; cols: string[]; color: string }> = ({
   icon, label, count, cols, color,
 }) => (
-  <details className="text-sm">
+  <details className="text-sm flex-1 min-w-0">
     <summary className={`cursor-pointer font-medium ${color} flex items-center gap-2`}>
       <span>{icon}</span>
-      <span>{label}</span>
-      <span className="text-xs font-normal text-gray-500 mr-1">({count} תנועות)</span>
+      <span className="truncate">{label}</span>
+      <span className="text-xs font-normal text-gray-500 mr-1 shrink-0">({count} תנועות)</span>
     </summary>
     <p className="mt-1 text-xs text-gray-400 bg-gray-50 rounded px-2 py-1 break-words">
       עמודות: {cols.join(' · ')}
     </p>
   </details>
+);
+
+// ---- Helpers ----
+
+const fileToBase64 = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const result = e.target?.result as string;
+      // result is "data:<mime>;base64,<data>" — strip the prefix
+      resolve(result.split(',')[1] ?? '');
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
+const CONFIDENCE_STYLE: Record<string, string> = {
+  high:   'bg-green-100 text-green-700',
+  medium: 'bg-yellow-100 text-yellow-700',
+  low:    'bg-red-100 text-red-600',
+};
+
+const CONFIDENCE_LABEL: Record<string, string> = {
+  high: 'גבוה', medium: 'בינוני', low: 'נמוך',
+};
+
+const ClassifyResultsPanel: FC<{ results: ClassifyResult[]; summary: Record<string, number> }> = ({
+  results, summary,
+}) => (
+  <div className="border border-indigo-200 rounded-xl overflow-hidden">
+    {/* Summary bar */}
+    <div className="bg-indigo-50 px-4 py-3 flex flex-wrap gap-2 items-center border-b border-indigo-100">
+      <span className="text-xs font-semibold text-indigo-700 ml-1">תוצאות LLM · {results.length} תנועות:</span>
+      {Object.entries(summary)
+        .sort(([, a], [, b]) => b - a)
+        .map(([cat, count]) => (
+          <span key={cat} className="text-xs bg-white border border-indigo-200 text-indigo-600 rounded-full px-2 py-0.5 font-medium">
+            {cat} ({count})
+          </span>
+        ))}
+    </div>
+
+    {/* Transactions table */}
+    <div className="max-h-72 overflow-y-auto">
+      <table className="w-full text-xs">
+        <thead className="bg-gray-50 sticky top-0">
+          <tr>
+            <th className="text-right px-3 py-2 font-medium text-gray-500">תיאור</th>
+            <th className="text-right px-3 py-2 font-medium text-gray-500 w-20">סכום</th>
+            <th className="text-right px-3 py-2 font-medium text-gray-500 w-28">קטגוריה</th>
+            <th className="text-right px-3 py-2 font-medium text-gray-500 w-16">ביטחון</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {results.map((r) => (
+            <tr key={r.id} className="hover:bg-gray-50" title={r.reasoning}>
+              <td className="px-3 py-2 text-gray-800 max-w-xs truncate">{r.description}</td>
+              <td className="px-3 py-2 text-gray-600 tabular-nums">₪{r.amount.toLocaleString()}</td>
+              <td className="px-3 py-2 text-gray-700 font-medium">{r.category}</td>
+              <td className="px-3 py-2">
+                <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${CONFIDENCE_STYLE[r.confidence] ?? ''}`}>
+                  {CONFIDENCE_LABEL[r.confidence] ?? r.confidence}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </div>
 );
 
 export default DualFileUpload;

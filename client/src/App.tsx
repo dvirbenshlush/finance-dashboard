@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import TabNav, { type TabId } from './components/layout/TabNav';
 import CashflowTab from './components/cashflow/CashflowTab';
-import CategorizationTab from './components/categorization/CategorizationTab';
+import PortfolioTab from './components/portfolio/PortfolioTab';
 import AssetsTab from './components/assets/AssetsTab';
 import LoansTab from './components/loans/LoansTab';
 import CalendarTab from './components/calendar/CalendarTab';
@@ -49,7 +49,7 @@ const EMPTY_PORTFOLIO: Portfolio = {
 };
 
 function App() {
-  const [activeTab, setActiveTab] = useState<TabId>('cashflow');
+  const [activeTab, setActiveTab] = useState<TabId>('cashflow' as TabId);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [portfolio, setPortfolio] = useState<Portfolio>(EMPTY_PORTFOLIO);
   const [dbStatus, setDbStatus] = useState<'loading' | 'ready' | 'offline'>('loading');
@@ -182,7 +182,7 @@ function App() {
   }, []);
 
   const debitCount = filteredTransactions.filter((t) => t.isDebit).length;
-  const showRangeFilter = ['cashflow', 'categorization', 'calendar'].includes(activeTab) && transactions.length > 0;
+  const showRangeFilter = ['cashflow', 'calendar'].includes(activeTab) && transactions.length > 0;
 
   return (
     <div dir="rtl" className="min-h-screen bg-gray-50 font-sans">
@@ -310,17 +310,13 @@ function App() {
           <CashflowTab
             transactions={filteredTransactions}
             onTransactionsLoaded={handleTransactionsLoaded}
-          />
-        )}
-        {activeTab === 'categorization' && (
-          <CategorizationTab
-            transactions={filteredTransactions}
             onCategoryUpdate={handleCategoryUpdate}
             onCategorizeAll={handleCategorizeAll}
             categorizing={categorizing}
             categorizeError={categorizeError}
           />
         )}
+        {activeTab === 'stock_portfolio' && <PortfolioTab />}
         {activeTab === 'assets' && (
           <AssetsTab portfolio={portfolio} onPortfolioChange={setPortfolio} />
         )}

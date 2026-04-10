@@ -1,13 +1,13 @@
 import { type FC } from 'react';
 
-export type TabId = 'cashflow' | 'categorization' | 'assets' | 'loans' | 'calendar';
+export type TabId = 'cashflow' | 'stock_portfolio' | 'assets' | 'loans' | 'calendar';
 
 const TABS = [
-  { id: 'cashflow' as TabId,       label: 'תזרים מזומנים',         icon: '📊' },
-  { id: 'categorization' as TabId, label: 'קטגוריות',               icon: '🏷️' },
-  { id: 'calendar' as TabId,       label: 'לוח שנה',                icon: '📅' },
-  { id: 'assets' as TabId,         label: 'תיק נכסים',              icon: '🏠' },
-  { id: 'loans' as TabId,          label: 'הלוואות והתחייבויות',    icon: '💳' },
+  { id: 'cashflow' as TabId,         label: 'תזרים מזומנים',      icon: '📊' },
+  { id: 'stock_portfolio' as TabId,  label: 'שוק ההון',           icon: '📈' },
+  { id: 'calendar' as TabId,         label: 'לוח שנה',             icon: '📅' },
+  { id: 'assets' as TabId,           label: 'תיק נכסים',           icon: '🏠' },
+  { id: 'loans' as TabId,            label: 'הלוואות והתחייבויות', icon: '💳' },
 ];
 
 interface TabNavProps {
