@@ -1,4 +1,4 @@
-import { type FC, useRef, useState, useMemo } from 'react';
+import { type FC, useRef, useState, useMemo, useEffect } from 'react';
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend,
@@ -73,33 +73,91 @@ async function parseFile(file: File): Promise<StockTransaction[]> {
   return data.transactions;
 }
 
-// ── Summary computation ───────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-function computeSummary(txs: StockTransaction[]) {
-  const bySymbol: Record<string, {
-    symbol: string; name?: string;
-    totalBought: number; totalSold: number;
-    dividends: number; fees: number; quantity: number;
-  }> = {};
+interface Quote {
+  symbol: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  currency: string;
+}
 
-  let totalBought = 0, totalSold = 0, totalDividends = 0, totalFees = 0;
+interface Position {
+  symbol: string;
+  name?: string;
+  quantityBought: number;
+  quantitySold: number;
+  quantityHeld: number;       // bought - sold
+  totalBought: number;        // total cash spent on buys
+  totalSold: number;          // total cash received from sells
+  avgCostPerShare: number;    // weighted avg: totalBought / quantityBought
+  costBasis: number;          // avgCostPerShare × quantityHeld (remaining position cost)
+  dividends: number;
+  fees: number;
+  realizedPnL: number;        // proceeds - cost of sold shares + dividends - fees
+  // Populated after quote fetch:
+  currentPrice?: number;
+  currentValue?: number;
+  unrealizedPnL?: number;
+  unrealizedPct?: number;
+  dailyChangePct?: number;
+}
+
+// ── Position computation (weighted average cost method) ───────────────────────
+
+function computePositions(txs: StockTransaction[]): Record<string, Position> {
+  const bySymbol: Record<string, Position> = {};
 
   for (const tx of txs) {
     const sym = tx.symbol.toUpperCase();
-    if (!bySymbol[sym]) bySymbol[sym] = { symbol: sym, name: tx.name, totalBought: 0, totalSold: 0, dividends: 0, fees: 0, quantity: 0 };
-    const b = bySymbol[sym];
-    if (tx.name && !b.name) b.name = tx.name;
-
-    switch (tx.action) {
-      case 'buy':      b.totalBought += tx.amount; b.quantity += tx.quantity ?? 0; totalBought += tx.amount; break;
-      case 'sell':     b.totalSold   += tx.amount; b.quantity -= tx.quantity ?? 0; totalSold   += tx.amount; break;
-      case 'dividend': b.dividends   += tx.amount; totalDividends += tx.amount; break;
-      case 'fee':      b.fees        += tx.amount; totalFees      += tx.amount; break;
+    if (!bySymbol[sym]) {
+      bySymbol[sym] = {
+        symbol: sym, name: tx.name,
+        quantityBought: 0, quantitySold: 0, quantityHeld: 0,
+        totalBought: 0, totalSold: 0,
+        avgCostPerShare: 0, costBasis: 0,
+        dividends: 0, fees: 0, realizedPnL: 0,
+      };
     }
+    const p = bySymbol[sym];
+    if (tx.name && !p.name) p.name = tx.name;
+
+    if (tx.action === 'buy') {
+      p.totalBought    += tx.amount;
+      p.quantityBought += tx.quantity ?? 0;
+      // Recalculate weighted average cost
+      p.avgCostPerShare = p.quantityBought > 0 ? p.totalBought / p.quantityBought : 0;
+    } else if (tx.action === 'sell') {
+      const qty = tx.quantity ?? 0;
+      const costOfSold = p.avgCostPerShare * qty;
+      p.realizedPnL += tx.amount - costOfSold;
+      p.totalSold       += tx.amount;
+      p.quantitySold    += qty;
+    } else if (tx.action === 'dividend') {
+      p.dividends    += tx.amount;
+      p.realizedPnL  += tx.amount;
+    } else if (tx.action === 'fee') {
+      p.fees         += tx.amount;
+      p.realizedPnL  -= tx.amount;
+    }
+
+    p.quantityHeld = Math.max(0, p.quantityBought - p.quantitySold);
+    p.costBasis    = p.avgCostPerShare * p.quantityHeld;
   }
 
-  const netPnL = totalSold + totalDividends - totalBought - totalFees;
-  return { bySymbol, totalBought, totalSold, totalDividends, totalFees, netPnL };
+  return bySymbol;
+}
+
+function aggregateTotals(positions: Record<string, Position>, enriched: Position[]) {
+  const totalCostBasis    = enriched.reduce((s, p) => s + p.costBasis, 0);
+  const totalCurrentValue = enriched.reduce((s, p) => s + (p.currentValue ?? p.costBasis), 0);
+  const totalUnrealized   = enriched.reduce((s, p) => s + (p.unrealizedPnL ?? 0), 0);
+  const totalRealized     = Object.values(positions).reduce((s, p) => s + p.realizedPnL, 0);
+  const totalDividends    = Object.values(positions).reduce((s, p) => s + p.dividends, 0);
+  const totalFees         = Object.values(positions).reduce((s, p) => s + p.fees, 0);
+  const totalBought       = Object.values(positions).reduce((s, p) => s + p.totalBought, 0);
+  return { totalCostBasis, totalCurrentValue, totalUnrealized, totalRealized, totalDividends, totalFees, totalBought };
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -169,20 +227,60 @@ const AIAnalysisPanel: FC<{ analysis: PortfolioAIAnalysis }> = ({ analysis }) =>
 const PortfolioTab: FC = () => {
   const inputRef = useRef<HTMLInputElement>(null);
   const [transactions, setTransactions] = useState<StockTransaction[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [fileName, setFileName] = useState<string | null>(null);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analysis, setAnalysis] = useState<PortfolioAIAnalysis | null>(null);
+  const [uploading, setUploading]       = useState(false);
+  const [uploadError, setUploadError]   = useState<string | null>(null);
+  const [fileName, setFileName]         = useState<string | null>(null);
+  const [analyzing, setAnalyzing]       = useState(false);
+  const [analysis, setAnalysis]         = useState<PortfolioAIAnalysis | null>(null);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
+  const [isDragging, setIsDragging]     = useState(false);
+  const [quotes, setQuotes]             = useState<Quote[]>([]);
+  const [quotesLoading, setQuotesLoading] = useState(false);
+  const [quotesError, setQuotesError]     = useState<string | null>(null);
+  const [quotesUpdated, setQuotesUpdated] = useState<Date | null>(null);
 
-  const summary = useMemo(() => computeSummary(transactions), [transactions]);
+  // Computed positions (weighted avg cost, realized P&L)
+  const positions = useMemo(() => computePositions(transactions), [transactions]);
+
+  // Enrich positions with live prices
+  const enrichedPositions = useMemo<Position[]>(() => {
+    return Object.values(positions).map(p => {
+      if (p.quantityHeld <= 0.0001) return p;
+      const q = quotes.find(q => q.symbol === p.symbol);
+      if (!q) return p;
+      const currentValue  = q.price * p.quantityHeld;
+      const unrealizedPnL = currentValue - p.costBasis;
+      return {
+        ...p,
+        currentPrice:   q.price,
+        currentValue,
+        unrealizedPnL,
+        unrealizedPct:  p.costBasis > 0 ? (unrealizedPnL / p.costBasis) * 100 : 0,
+        dailyChangePct: q.changePercent,
+      };
+    });
+  }, [positions, quotes]);
+
+  const totals = useMemo(() => aggregateTotals(positions, enrichedPositions), [positions, enrichedPositions]);
+
+  // Fetch live quotes for all held symbols after transactions load
+  useEffect(() => {
+    const held = Object.values(positions).filter(p => p.quantityHeld > 0.0001).map(p => p.symbol);
+    if (held.length === 0) { setQuotes([]); return; }
+    setQuotesLoading(true);
+    setQuotesError(null);
+    fetch(`${BASE}/portfolio/quotes?symbols=${held.join(',')}`)
+      .then(r => r.json())
+      .then((data: Quote[]) => { setQuotes(data); setQuotesUpdated(new Date()); })
+      .catch(e => setQuotesError(String(e)))
+      .finally(() => setQuotesLoading(false));
+  }, [positions]);
 
   const handleFile = async (file: File) => {
     setUploading(true);
     setUploadError(null);
     setAnalysis(null);
+    setQuotes([]);
     setFileName(file.name);
     try {
       const txs = await parseFile(file);
@@ -195,34 +293,50 @@ const PortfolioTab: FC = () => {
     }
   };
 
+  const handleRefreshQuotes = () => {
+    const held = Object.values(positions).filter(p => p.quantityHeld > 0.0001).map(p => p.symbol);
+    if (held.length === 0) return;
+    setQuotesLoading(true);
+    setQuotesError(null);
+    fetch(`${BASE}/portfolio/quotes?symbols=${held.join(',')}`)
+      .then(r => r.json())
+      .then((data: Quote[]) => { setQuotes(data); setQuotesUpdated(new Date()); })
+      .catch(e => setQuotesError(String(e)))
+      .finally(() => setQuotesLoading(false));
+  };
+
   const handleAnalyze = async () => {
     setAnalyzing(true);
     setAnalyzeError(null);
     try {
-      const { bySymbol, totalBought, totalSold, totalDividends, totalFees, netPnL } = summary;
       const res = await fetch(`${BASE}/portfolio/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           summary: {
             totalTransactions: transactions.length,
-            totalBought, totalSold, totalDividends, totalFees, netPnL,
-            returnPct: totalBought > 0 ? ((netPnL / totalBought) * 100).toFixed(1) : 0,
-            holdings: Object.values(bySymbol).map(h => ({
-              symbol: h.symbol,
-              name: h.name,
-              invested: h.totalBought,
-              received: h.totalSold,
-              dividends: h.dividends,
-              fees: h.fees,
-              pnl: h.totalSold - h.totalBought + h.dividends,
+            totalBought: totals.totalBought,
+            totalCurrentValue: totals.totalCurrentValue,
+            totalUnrealizedPnL: totals.totalUnrealized,
+            totalRealizedPnL: totals.totalRealized,
+            totalDividends: totals.totalDividends,
+            totalFees: totals.totalFees,
+            holdings: enrichedPositions.map(p => ({
+              symbol: p.symbol, name: p.name,
+              quantityHeld: p.quantityHeld,
+              avgCostPerShare: p.avgCostPerShare,
+              costBasis: p.costBasis,
+              currentPrice: p.currentPrice,
+              currentValue: p.currentValue,
+              unrealizedPnL: p.unrealizedPnL,
+              realizedPnL: p.realizedPnL,
+              dividends: p.dividends,
             })),
           },
         }),
       });
       if (!res.ok) throw new Error(`Server ${res.status}`);
-      const data = await res.json() as PortfolioAIAnalysis;
-      setAnalysis(data);
+      setAnalysis(await res.json() as PortfolioAIAnalysis);
     } catch (e) {
       setAnalyzeError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -233,24 +347,24 @@ const PortfolioTab: FC = () => {
   // ── Chart data ──────────────────────────────────────────────────────────────
 
   const allocationData = useMemo(() =>
-    Object.values(summary.bySymbol)
-      .filter(h => h.totalBought > 0)
-      .sort((a, b) => b.totalBought - a.totalBought)
+    enrichedPositions
+      .filter(p => p.quantityHeld > 0.0001)
+      .sort((a, b) => (b.currentValue ?? b.costBasis) - (a.currentValue ?? a.costBasis))
       .slice(0, 8)
-      .map(h => ({ name: h.symbol, value: Math.round(h.totalBought) })),
-  [summary]);
+      .map(p => ({ name: p.symbol, value: Math.round(p.currentValue ?? p.costBasis) })),
+  [enrichedPositions]);
 
   const pnlData = useMemo(() =>
-    Object.values(summary.bySymbol)
-      .filter(h => h.totalBought > 0 || h.dividends > 0)
-      .map(h => ({
-        symbol: h.symbol,
-        pnl: Math.round(h.totalSold - h.totalBought + h.dividends),
-        dividends: Math.round(h.dividends),
+    enrichedPositions
+      .filter(p => p.quantityBought > 0)
+      .map(p => ({
+        symbol: p.symbol,
+        unrealized: Math.round(p.unrealizedPnL ?? 0),
+        realized:   Math.round(p.realizedPnL),
       }))
-      .sort((a, b) => b.pnl - a.pnl)
+      .sort((a, b) => (b.unrealized + b.realized) - (a.unrealized + a.realized))
       .slice(0, 10),
-  [summary]);
+  [enrichedPositions]);
 
   const monthlyActivity = useMemo(() => {
     const map = new Map<string, { month: string; bought: number; sold: number; dividends: number }>();
@@ -265,9 +379,8 @@ const PortfolioTab: FC = () => {
     return Array.from(map.values()).sort((a, b) => a.month.localeCompare(b.month));
   }, [transactions]);
 
-  const returnPct = summary.totalBought > 0
-    ? ((summary.netPnL / summary.totalBought) * 100)
-    : 0;
+  const totalPnL    = totals.totalUnrealized + totals.totalRealized;
+  const totalPnLPct = totals.totalBought > 0 ? (totalPnL / totals.totalBought) * 100 : 0;
 
   // ── Upload zone ─────────────────────────────────────────────────────────────
 
@@ -323,18 +436,56 @@ const PortfolioTab: FC = () => {
         </button>
       </div>
 
+      {/* Quote status bar */}
+      <div className="flex items-center gap-3 text-xs text-gray-400 flex-wrap">
+        {quotesLoading && <span className="animate-pulse text-blue-500">🔄 מושך שערים עדכניים...</span>}
+        {quotesError && <span className="text-orange-500">⚠️ לא ניתן לטעון שערים: {quotesError.slice(0, 60)}</span>}
+        {quotesUpdated && !quotesLoading && (
+          <span>עודכן ב-{quotesUpdated.toLocaleTimeString('he-IL')}</span>
+        )}
+        {quotes.length > 0 && (
+          <button onClick={handleRefreshQuotes} disabled={quotesLoading}
+            className="text-blue-500 hover:text-blue-700 underline disabled:opacity-40">
+            רענן שערים
+          </button>
+        )}
+        {quotes.map(q => (
+          <span key={q.symbol} className={`font-medium ${q.changePercent >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+            {q.symbol} ${q.price.toFixed(2)} ({q.changePercent >= 0 ? '+' : ''}{q.changePercent.toFixed(2)}%)
+          </span>
+        ))}
+      </div>
+
       {/* KPI cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        <KpiCard label="סה״כ הושקע"    value={fmt(summary.totalBought)}    color="text-blue-600" />
-        <KpiCard label="סה״כ נמכר"     value={fmt(summary.totalSold)}      color="text-green-600" />
-        <KpiCard label="דיבידנדים"      value={fmt(summary.totalDividends)} color="text-yellow-600" />
-        <KpiCard label="עמלות ששולמו"   value={fmt(summary.totalFees)}      color="text-red-500" />
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <KpiCard label="עלות השקעה כוללת" value={fmt(totals.totalBought)}     color="text-blue-600" />
+        <KpiCard label="שווי תיק כיום"    value={fmt(totals.totalCurrentValue)} color="text-indigo-600"
+          sub={quotes.length > 0 ? 'לפי שערים עדכניים' : 'לפי עלות (ממתין לשערים)'} />
         <KpiCard
-          label="רווח/הפסד נטו"
-          value={fmt(summary.netPnL)}
-          sub={`${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(1)}%`}
-          color={summary.netPnL >= 0 ? 'text-green-600' : 'text-red-500'}
+          label="רווח לא ממומש"
+          value={fmt(totals.totalUnrealized)}
+          sub={totals.totalCostBasis > 0 ? `${totals.totalUnrealized >= 0 ? '+' : ''}${((totals.totalUnrealized / totals.totalCostBasis) * 100).toFixed(1)}% על עמדות פתוחות` : undefined}
+          color={totals.totalUnrealized >= 0 ? 'text-green-600' : 'text-red-500'}
         />
+        <KpiCard
+          label="רווח ממומש"
+          value={fmt(totals.totalRealized)}
+          color={totals.totalRealized >= 0 ? 'text-green-600' : 'text-red-500'}
+        />
+        <KpiCard label="דיבידנדים"     value={fmt(totals.totalDividends)} color="text-yellow-600" />
+        <KpiCard label="עמלות ששולמו"  value={fmt(totals.totalFees)}      color="text-red-500"
+          sub={`${totals.totalBought > 0 ? ((totals.totalFees / totals.totalBought) * 100).toFixed(2) : 0}% מהשקעה`} />
+      </div>
+
+      {/* Total P&L banner */}
+      <div className={`rounded-xl border px-5 py-3 flex items-center justify-between ${
+        totalPnL >= 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'
+      }`}>
+        <span className="text-sm font-medium text-gray-600">רווח/הפסד כולל (ממומש + לא ממומש)</span>
+        <span className={`text-xl font-bold ${totalPnL >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+          {totalPnL >= 0 ? '+' : ''}{fmt(totalPnL)}
+          <span className="text-sm font-normal mr-2">({totalPnLPct >= 0 ? '+' : ''}{totalPnLPct.toFixed(1)}%)</span>
+        </span>
       </div>
 
       {/* Charts row */}
@@ -393,44 +544,88 @@ const PortfolioTab: FC = () => {
       </div>
 
       {/* Holdings table */}
-      {Object.keys(summary.bySymbol).length > 0 && (
+      {enrichedPositions.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <div className="px-5 py-3 border-b border-gray-100">
-            <h3 className="text-sm font-semibold text-gray-700">פירוט אחזקות</h3>
+          <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-700">אחזקות ועמדות</h3>
+            <div className="flex gap-4 text-xs text-gray-400">
+              <span>✅ פתוחה</span><span>📦 סגורה</span>
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-right px-4 py-2 font-medium text-gray-500">נייר ערך</th>
-                  <th className="text-right px-4 py-2 font-medium text-gray-500">סה״כ הושקע</th>
-                  <th className="text-right px-4 py-2 font-medium text-gray-500">סה״כ נמכר</th>
+                  <th className="text-right px-4 py-2 font-medium text-gray-500">נייר</th>
+                  <th className="text-right px-4 py-2 font-medium text-gray-500">כמות מוחזקת</th>
+                  <th className="text-right px-4 py-2 font-medium text-gray-500">עלות ממוצעת</th>
+                  <th className="text-right px-4 py-2 font-medium text-gray-500">שווי עלות</th>
+                  <th className="text-right px-4 py-2 font-medium text-gray-500">מחיר כיום</th>
+                  <th className="text-right px-4 py-2 font-medium text-gray-500">שווי כיום</th>
+                  <th className="text-right px-4 py-2 font-medium text-gray-500">רווח לא ממומש</th>
+                  <th className="text-right px-4 py-2 font-medium text-gray-500">רווח ממומש</th>
                   <th className="text-right px-4 py-2 font-medium text-gray-500">דיבידנדים</th>
-                  <th className="text-right px-4 py-2 font-medium text-gray-500">עמלות</th>
-                  <th className="text-right px-4 py-2 font-medium text-gray-500">רווח/הפסד</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {Object.values(summary.bySymbol)
-                  .sort((a, b) => b.totalBought - a.totalBought)
-                  .map(h => {
-                    const pnl = h.totalSold - h.totalBought + h.dividends;
-                    return (
-                      <tr key={h.symbol} className="hover:bg-gray-50">
-                        <td className="px-4 py-2.5">
-                          <span className="font-bold text-gray-800">{h.symbol}</span>
-                          {h.name && <span className="text-gray-400 mr-1 text-xs"> · {h.name}</span>}
-                        </td>
-                        <td className="px-4 py-2.5 text-blue-600 font-medium">{fmt(h.totalBought)}</td>
-                        <td className="px-4 py-2.5 text-green-600">{h.totalSold > 0 ? fmt(h.totalSold) : '—'}</td>
-                        <td className="px-4 py-2.5 text-yellow-600">{h.dividends > 0 ? fmt(h.dividends) : '—'}</td>
-                        <td className="px-4 py-2.5 text-red-500">{h.fees > 0 ? fmt(h.fees) : '—'}</td>
-                        <td className={`px-4 py-2.5 font-semibold ${pnl >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-                          {pnl >= 0 ? '+' : ''}{fmt(pnl)}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                {enrichedPositions
+                  .sort((a, b) => (b.currentValue ?? b.costBasis) - (a.currentValue ?? a.costBasis))
+                  .map(p => (
+                    <tr key={p.symbol} className="hover:bg-gray-50">
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs">{p.quantityHeld > 0.0001 ? '✅' : '📦'}</span>
+                          <span className="font-bold text-gray-800">{p.symbol}</span>
+                          {p.name && <span className="text-gray-400 truncate max-w-24"> {p.name}</span>}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2.5 tabular-nums text-gray-700">
+                        {p.quantityHeld > 0.0001 ? p.quantityHeld.toFixed(4) : '—'}
+                      </td>
+                      <td className="px-4 py-2.5 tabular-nums text-gray-600">
+                        {p.avgCostPerShare > 0 ? `$${p.avgCostPerShare.toFixed(2)}` : '—'}
+                      </td>
+                      <td className="px-4 py-2.5 tabular-nums text-blue-600 font-medium">
+                        {p.costBasis > 0 ? fmt(p.costBasis) : '—'}
+                      </td>
+                      <td className="px-4 py-2.5 tabular-nums">
+                        {p.currentPrice ? (
+                          <span>
+                            ${p.currentPrice.toFixed(2)}
+                            {p.dailyChangePct !== undefined && (
+                              <span className={`mr-1 ${p.dailyChangePct >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                {' '}({p.dailyChangePct >= 0 ? '+' : ''}{p.dailyChangePct.toFixed(2)}%)
+                              </span>
+                            )}
+                          </span>
+                        ) : <span className="text-gray-300">—</span>}
+                      </td>
+                      <td className="px-4 py-2.5 tabular-nums font-medium text-indigo-600">
+                        {p.currentValue ? fmt(p.currentValue) : '—'}
+                      </td>
+                      <td className={`px-4 py-2.5 tabular-nums font-semibold ${
+                        p.unrealizedPnL == null ? 'text-gray-300' :
+                        p.unrealizedPnL >= 0 ? 'text-green-600' : 'text-red-500'
+                      }`}>
+                        {p.unrealizedPnL != null ? (
+                          <span>
+                            {p.unrealizedPnL >= 0 ? '+' : ''}{fmt(p.unrealizedPnL)}
+                            {p.unrealizedPct !== undefined && (
+                              <span className="font-normal text-xs mr-1">
+                                {' '}({p.unrealizedPct >= 0 ? '+' : ''}{p.unrealizedPct.toFixed(1)}%)
+                              </span>
+                            )}
+                          </span>
+                        ) : '—'}
+                      </td>
+                      <td className={`px-4 py-2.5 tabular-nums font-semibold ${p.realizedPnL >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                        {p.realizedPnL !== 0 ? `${p.realizedPnL >= 0 ? '+' : ''}${fmt(p.realizedPnL)}` : '—'}
+                      </td>
+                      <td className="px-4 py-2.5 tabular-nums text-yellow-600">
+                        {p.dividends > 0 ? fmt(p.dividends) : '—'}
+                      </td>
+                    </tr>
+                  ))}
               </tbody>
             </table>
           </div>

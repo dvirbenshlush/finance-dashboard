@@ -144,4 +144,55 @@ ${JSON.stringify(summary, null, 2)}
   }
 });
 
+// ── GET /api/portfolio/quotes?symbols=VOO,AAPL,IBIT ──────────────────────────
+// Proxies Yahoo Finance — no API key required.
+router.get('/quotes', async (req: Request, res: Response) => {
+  const symbols = String(req.query.symbols ?? '')
+    .split(',')
+    .map(s => s.trim().toUpperCase())
+    .filter(Boolean);
+
+  if (!symbols.length) { res.json([]); return; }
+
+  const results = await Promise.allSettled(
+    symbols.map(async (symbol) => {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
+      const r = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json',
+        },
+      });
+      if (!r.ok) throw new Error(`Yahoo HTTP ${r.status} for ${symbol}`);
+      const data = await r.json() as {
+        chart?: { result?: { meta: { regularMarketPrice?: number; previousClose?: number; chartPreviousClose?: number; currency?: string } }[] }
+      };
+      const meta = data?.chart?.result?.[0]?.meta;
+      const price = meta?.regularMarketPrice;
+      if (!price) throw new Error(`No price for ${symbol}`);
+      const prev = meta.previousClose ?? meta.chartPreviousClose ?? price;
+      return {
+        symbol,
+        price,
+        change: price - prev,
+        changePercent: prev ? ((price - prev) / prev) * 100 : 0,
+        currency: meta.currency ?? 'USD',
+      };
+    }),
+  );
+
+  const quotes = results
+    .filter((r): r is PromiseFulfilledResult<{ symbol: string; price: number; change: number; changePercent: number; currency: string }> => r.status === 'fulfilled')
+    .map(r => r.value);
+
+  const failed = results
+    .filter(r => r.status === 'rejected')
+    .map((r, i) => ({ symbol: symbols[i], error: (r as PromiseRejectedResult).reason?.message }));
+
+  if (failed.length) console.warn('[portfolio/quotes] Failed:', failed);
+  console.log(`[portfolio/quotes] ${quotes.length}/${symbols.length} quotes fetched`);
+
+  res.json(quotes);
+});
+
 export default router;
