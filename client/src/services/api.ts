@@ -44,4 +44,23 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ categoryTotals, monthlyAvgBurn }),
     }),
+
+  // Classify Excel file via pure LLM classifier
+  classifyExcel: (base64: string, filename: string) =>
+    request<{
+      filename: string;
+      rowsExtracted: number;
+      results: {
+        id: string;
+        description: string;
+        amount: number;
+        category: string;
+        confidence: 'high' | 'medium' | 'low';
+        reasoning: string;
+      }[];
+      summary: Record<string, number>;
+    }>('/classify/excel', {
+      method: 'POST',
+      body: JSON.stringify({ base64, filename }),
+    }),
 };
