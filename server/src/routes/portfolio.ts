@@ -125,9 +125,13 @@ ${JSON.stringify(summary, null, 2)}
 5. המלצות ספציפיות לשיפור`;
 
   try {
-    const raw = await callGroq(apiKey, [{ role: 'user', content: prompt }], true);
+    // llama-4-scout doesn't support json_object mode — extract JSON from free-text response
+    const raw = await callGroq(apiKey, [{ role: 'user', content: prompt }], false);
     let parsed: unknown = {};
-    try { parsed = JSON.parse(raw); } catch { /* fallback */ }
+    try {
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (match) parsed = JSON.parse(match[0]);
+    } catch { /* fallback */ }
     res.json(parsed);
   } catch (e) {
     res.status(500).json({ error: String(e) });
