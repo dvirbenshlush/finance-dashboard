@@ -111,6 +111,7 @@ export interface StockTransaction {
   quantity?: number;
   price?: number;        // price per unit
   amount: number;        // always positive; action determines direction
+  costBasis?: number;    // total cost of sold shares as reported by broker (sell rows only)
   currency: string;      // USD | ILS | EUR
 }
 

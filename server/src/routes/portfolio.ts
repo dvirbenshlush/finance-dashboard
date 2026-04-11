@@ -3,23 +3,35 @@ import { Router, Request, Response } from 'express';
 const router = Router();
 
 const GROQ_URL  = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = 'llama-3.1-8b-instant';
+const GROQ_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct'; // 30K TPM on free tier
 
 async function callGroq(apiKey: string, messages: { role: string; content: string }[], jsonMode = false): Promise<string> {
-  const res = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: GROQ_MODEL,
-      messages,
-      temperature: 0.1,
-      max_tokens: 2048,
-      ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
-    }),
-  });
-  const data = await res.json() as { choices?: { message: { content: string } }[]; error?: { message: string } };
-  if (data.error) throw new Error(data.error.message);
-  return data.choices?.[0]?.message?.content ?? '{}';
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch(GROQ_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        messages,
+        temperature: 0.1,
+        max_tokens: 2048,
+        ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
+      }),
+    });
+    const data = await res.json() as { choices?: { message: { content: string } }[]; error?: { message: string } };
+    if (!data.error) return data.choices?.[0]?.message?.content ?? '{}';
+
+    // Parse wait time from rate-limit message e.g. "Please try again in 15.04s"
+    const waitMatch = data.error.message.match(/try again in ([\d.]+)s/i);
+    if (res.status === 429 && waitMatch && attempt < 2) {
+      const waitMs = Math.ceil(parseFloat(waitMatch[1]) * 1000) + 500;
+      console.log(`[groq] Rate limited — waiting ${waitMs}ms before retry ${attempt + 1}`);
+      await new Promise(r => setTimeout(r, waitMs));
+      continue;
+    }
+    throw new Error(data.error.message);
+  }
+  throw new Error('Groq: max retries exceeded');
 }
 
 // ── POST /api/portfolio/parse ─────────────────────────────────────────────────
@@ -29,8 +41,8 @@ router.post('/parse', async (req: Request, res: Response) => {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey)
   {
-    res.status(500).json({ error: 'GROQ_API_KEY not set' }); 
-    return; 
+    res.status(500).json({ error: 'GROQ_API_KEY not set' });
+    return;
   }
 
   const { rawText: rawTextBody, filename = '' } = req.body as {
@@ -42,40 +54,18 @@ router.post('/parse', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'rawText required' }); return;
   }
 
-  // Trim to avoid exceeding token limits (keep first ~8000 chars which is ~2000 tokens)
-  const trimmed = rawText.slice(0, 8000);
+  // Keep ~3500 chars (~900 tokens) to stay well under the 6000 TPM free-tier limit
+  const trimmed = rawText.slice(0, 3500);
 
-  console.log(`[portfolio/parse] ${filename}: ${rawText.length} chars extracted`);
+  console.log(`[portfolio/parse] ${filename}: ${rawText.length} chars → trimmed to ${trimmed.length}`);
 
-  const systemPrompt = `You are a financial data extractor for Israeli brokerage statements.
-Extract ALL transactions from the provided brokerage statement text.
-
-Return JSON ONLY in this exact format:
-{
-  "transactions": [
-    {
-      "date": "YYYY-MM-DD",
-      "symbol": "TICKER",
-      "name": "Company or Fund Name",
-      "action": "buy|sell|dividend|fee|interest|other",
-      "quantity": 10.5,
-      "price": 450.20,
-      "amount": 4752.00,
-      "currency": "USD"
-    }
-  ]
-}
-
+  const systemPrompt = `Extract transactions from this brokerage statement. Return JSON only:
+{"transactions":[{"date":"YYYY-MM-DD","symbol":"TICKER","name":"Security Name","action":"buy|sell|dividend|fee|interest|other","quantity":0,"price":0,"amount":0,"costBasis":0,"currency":"USD"}]}
 Rules:
-- date: always YYYY-MM-DD format. If only month/year available use first of month.
-- symbol: stock/ETF ticker. If unknown use first word of name. Never empty string.
-- action: buy=קניה, sell=מכירה, dividend=דיבידנד, fee=עמלה/דמי ניהול, interest=ריבית, other=anything else
-- amount: always positive number (absolute value)
-- quantity: number of shares/units (omit if not applicable like fees)
-- price: price per unit (omit if not applicable)
-- currency: USD, ILS, EUR, GBP, etc.
-- Include ALL rows: buys, sells, dividends, fees, interest payments
-- If a field is not present in the source, omit it from the JSON`;
+- date=YYYY-MM-DD, symbol=ticker or first word of name, amount=always positive
+- action: קניה=buy מכירה=sell דיבידנד=dividend עמלה=fee ריבית=interest
+- costBasis: for SELL rows only — the total acquisition cost of the sold shares as stated in the report (שווי עלות / עלות רכישה / מחיר עלות). Omit if not present.
+- Omit any field not present in the source.`;
 
   try {
     const raw = await callGroq(apiKey, [

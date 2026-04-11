@@ -7,4 +7,8 @@ client/dist/
 server/.env
 server/data/transactions.json
 server/data/portfolio.json
+data/
+*.db
+*.db-shm
+*.db-wal
 .claude/

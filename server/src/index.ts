@@ -5,6 +5,7 @@ import dataRouter from './routes/data';
 import geminiRouter from './routes/gemini';
 import classifyRouter from './routes/classify';
 import portfolioRouter from './routes/portfolio';
+import { initDb } from './db';
 
 dotenv.config();
 
@@ -23,6 +24,13 @@ app.use('/api/gemini', geminiRouter);
 app.use('/api/classify', classifyRouter);
 app.use('/api/portfolio', portfolioRouter);
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-});
+initDb()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error('❌ Failed to connect to database:', err.message);
+    process.exit(1);
+  });

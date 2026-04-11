@@ -1,17 +1,19 @@
 import { Router, Request, Response } from 'express';
 import { classifyBatch } from '../llm/command-classification';
+import { sanitizeDescriptions } from '../utils/sanitize';
 
 const router = Router();
 
-const GROQ_MODEL = 'llama-3.1-8b-instant';
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const MODEL_CLASSIFY = 'llama-3.1-8b-instant';   // classification — own TPM pool
+const MODEL_ANALYZE  = 'llama-3.3-70b-versatile'; // spending insights — own TPM pool
 
 interface GroqResponse {
   choices?: { message: { content: string } }[];
   error?: { message: string };
 }
 
-const callGroq = async (apiKey: string, prompt: string, jsonMode = false): Promise<string> => {
+const callGroq = async (apiKey: string, model: string, prompt: string, jsonMode = false): Promise<string> => {
   const res = await fetch(GROQ_URL, {
     method: 'POST',
     headers: {
@@ -19,7 +21,7 @@ const callGroq = async (apiKey: string, prompt: string, jsonMode = false): Promi
       'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: GROQ_MODEL,
+      model,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.1,
       max_tokens: 1024,
@@ -46,8 +48,8 @@ router.get('/test', async (_req: Request, res: Response) => {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) { res.json({ error: 'GROQ_API_KEY not set in server .env' }); return; }
   try {
-    const raw = await callGroq(apiKey, 'Return exactly this JSON object: {"status":"ok","model":"groq"}', true);
-    res.json({ model: GROQ_MODEL, raw, parsed: extractJSON(raw) });
+    const raw = await callGroq(apiKey, MODEL_CLASSIFY, 'Return exactly this JSON object: {"status":"ok","model":"groq"}', true);
+    res.json({ model: MODEL_CLASSIFY, raw, parsed: extractJSON(raw) });
   } catch (e) {
     res.json({ error: String(e) });
   }
@@ -67,9 +69,13 @@ router.post('/categorize', async (req: Request, res: Response) => {
   console.log(`[Groq] Categorizing ${transactions.length} transactions via command-classification`);
 
   try {
+    // Strip PII from descriptions before sending to external LLM
+    const sanitized = sanitizeDescriptions(
+      transactions.map(tx => ({ id: tx.id, description: tx.description, amount: tx.amount }))
+    );
     const classified = await classifyBatch(
       apiKey,
-      transactions.map(tx => ({ id: tx.id, description: tx.description, amount: tx.amount })),
+      sanitized,
       [],
       (done, total) => console.log(`[Groq] ${done}/${total} classified`),
     );
@@ -105,7 +111,7 @@ router.post('/analyze', async (req: Request, res: Response) => {
 החזר JSON בלבד: {"insights":[{"type":"anomaly","title":"כותרת","description":"הסבר","severity":"low|medium|high"}]}`;
 
   try {
-    const text = await callGroq(apiKey, prompt, true);
+    const text = await callGroq(apiKey, MODEL_ANALYZE, prompt, true);
     const parsed = extractJSON<{ insights: unknown[] }>(text);
     res.json(parsed?.insights ?? []);
   } catch (err) {

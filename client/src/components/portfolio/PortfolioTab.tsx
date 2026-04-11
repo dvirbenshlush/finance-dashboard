@@ -5,6 +5,7 @@ import {
 } from 'recharts';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { StockTransaction, PortfolioAIAnalysis } from '../../types';
+import { api } from '../../services/api';
 
 // Point pdfjs to its worker (bundled with Vite)
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -123,41 +124,77 @@ function computePositions(txs: StockTransaction[]): Record<string, Position> {
     const p = bySymbol[sym];
     if (tx.name && !p.name) p.name = tx.name;
 
+    // Infer quantity when LLM didn't extract it but price is available
+    const inferQty = (t: StockTransaction) =>
+      (t.quantity && t.quantity > 0) ? t.quantity
+      : (t.price && t.price > 0)     ? t.amount / t.price
+      : 0;
+
+    // LLM sometimes returns negative amounts — normalise to positive
+    const amt = Math.abs(tx.amount);
+
     if (tx.action === 'buy') {
-      p.totalBought    += tx.amount;
-      p.quantityBought += tx.quantity ?? 0;
-      // Recalculate weighted average cost
-      p.avgCostPerShare = p.quantityBought > 0 ? p.totalBought / p.quantityBought : 0;
+      const qty = inferQty(tx);
+      p.totalBought    += amt;   // cumulative total invested (KPI display)
+      p.quantityBought += qty;
+      p.costBasis      += amt;   // running cost of currently held shares
     } else if (tx.action === 'sell') {
-      const qty = tx.quantity ?? 0;
-      const costOfSold = p.avgCostPerShare * qty;
-      p.realizedPnL += tx.amount - costOfSold;
-      p.totalSold       += tx.amount;
-      p.quantitySold    += qty;
+      const qty = inferQty(tx);
+      // Average cost per share of currently held position at moment of sale
+      const avgAtSale  = p.quantityHeld > 0.0001 ? p.costBasis / p.quantityHeld : 0;
+      const costOfSold = avgAtSale * qty;
+      p.realizedPnL   += amt - costOfSold;
+      p.totalSold      += amt;
+      p.quantitySold   += qty;
+      p.costBasis       = Math.max(0, p.costBasis - costOfSold); // reduce by sold portion
     } else if (tx.action === 'dividend') {
-      p.dividends    += tx.amount;
-      p.realizedPnL  += tx.amount;
+      p.dividends   += amt;
+      p.realizedPnL += amt;
     } else if (tx.action === 'fee') {
-      p.fees         += tx.amount;
-      p.realizedPnL  -= tx.amount;
+      p.fees        += amt;
+      p.realizedPnL -= amt;
     }
 
-    p.quantityHeld = Math.max(0, p.quantityBought - p.quantitySold);
-    p.costBasis    = p.avgCostPerShare * p.quantityHeld;
+    p.quantityHeld    = Math.max(0, p.quantityBought - p.quantitySold);
+    p.avgCostPerShare = p.quantityHeld > 0.0001 ? p.costBasis / p.quantityHeld : 0;
   }
 
   return bySymbol;
 }
 
-function aggregateTotals(positions: Record<string, Position>, enriched: Position[]) {
-  const totalCostBasis    = enriched.reduce((s, p) => s + p.costBasis, 0);
-  const totalCurrentValue = enriched.reduce((s, p) => s + (p.currentValue ?? p.costBasis), 0);
-  const totalUnrealized   = enriched.reduce((s, p) => s + (p.unrealizedPnL ?? 0), 0);
-  const totalRealized     = Object.values(positions).reduce((s, p) => s + p.realizedPnL, 0);
-  const totalDividends    = Object.values(positions).reduce((s, p) => s + p.dividends, 0);
-  const totalFees         = Object.values(positions).reduce((s, p) => s + p.fees, 0);
-  const totalBought       = Object.values(positions).reduce((s, p) => s + p.totalBought, 0);
-  return { totalCostBasis, totalCurrentValue, totalUnrealized, totalRealized, totalDividends, totalFees, totalBought };
+function aggregateTotals(all: Position[]) {
+  return {
+    totalCostBasis:    all.reduce((s, p) => s + p.costBasis, 0),
+    totalCurrentValue: all.reduce((s, p) => s + (p.currentValue ?? p.costBasis), 0),
+    totalUnrealized:   all.reduce((s, p) => s + (p.unrealizedPnL ?? 0), 0),
+    totalRealized:     all.reduce((s, p) => s + p.realizedPnL, 0),
+    totalDividends:    all.reduce((s, p) => s + p.dividends, 0),
+    totalFees:         all.reduce((s, p) => s + p.fees, 0),
+    totalBought:       all.reduce((s, p) => s + p.totalBought, 0),
+  };
+}
+
+// ── Manual position helpers ───────────────────────────────────────────────────
+
+interface ManualPosition {
+  id: string;
+  symbol: string;
+  name?: string;
+  quantityHeld: number;
+  avgCostPerShare: number;
+}
+
+const LS_MANUAL = 'riseup_manual_positions';
+
+function manualToPosition(m: ManualPosition): Position {
+  const costBasis = m.avgCostPerShare * m.quantityHeld;
+  return {
+    symbol: m.symbol, name: m.name,
+    quantityBought: m.quantityHeld, quantitySold: 0, quantityHeld: m.quantityHeld,
+    totalBought: costBasis, totalSold: 0,
+    avgCostPerShare: m.avgCostPerShare, costBasis,
+    dividends: 0, fees: 0, realizedPnL: 0,
+  };
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -227,6 +264,7 @@ const AIAnalysisPanel: FC<{ analysis: PortfolioAIAnalysis }> = ({ analysis }) =>
 const PortfolioTab: FC = () => {
   const inputRef = useRef<HTMLInputElement>(null);
   const [transactions, setTransactions] = useState<StockTransaction[]>([]);
+  const [loadingStored, setLoadingStored] = useState(true);
   const [uploading, setUploading]       = useState(false);
   const [uploadError, setUploadError]   = useState<string | null>(null);
   const [fileName, setFileName]         = useState<string | null>(null);
@@ -239,53 +277,168 @@ const PortfolioTab: FC = () => {
   const [quotesError, setQuotesError]     = useState<string | null>(null);
   const [quotesUpdated, setQuotesUpdated] = useState<Date | null>(null);
 
+  // Manual positions (persisted in localStorage)
+  const [manualPositions, setManualPositions] = useState<ManualPosition[]>(
+    () => { try { return JSON.parse(localStorage.getItem(LS_MANUAL) ?? '[]') as ManualPosition[]; } catch { return []; } }
+  );
+  const [addingRow, setAddingRow]     = useState(false);
+  const [newSymbol, setNewSymbol]     = useState('');
+  const [newQty, setNewQty]           = useState('');
+  const [newAvgCost, setNewAvgCost]   = useState('');
+  const [manualRowError, setManualRowError] = useState('');
+
+  // Per-field overrides — user can correct any editable column for any position
+  type OverrideField = 'quantityHeld' | 'avgCostPerShare' | 'realizedPnL' | 'dividends';
+  type PositionOverrides = Partial<Record<OverrideField, number>>;
+  const LS_OVERRIDES = 'riseup_position_overrides';
+  const [positionOverrides, setPositionOverrides] = useState<Record<string, PositionOverrides>>(
+    () => { try { return JSON.parse(localStorage.getItem('riseup_position_overrides') ?? '{}'); } catch { return {}; } }
+  );
+  const [editingCell, setEditingCell] = useState<{ symbol: string; field: OverrideField; value: string } | null>(null);
+
+  const saveOverride = (symbol: string, field: OverrideField, val: number) => {
+    const next = { ...positionOverrides, [symbol]: { ...(positionOverrides[symbol] ?? {}), [field]: val } };
+    setPositionOverrides(next);
+    localStorage.setItem(LS_OVERRIDES, JSON.stringify(next));
+  };
+
+  const startEdit = (symbol: string, field: OverrideField, current: number) =>
+    setEditingCell({ symbol, field, value: String(current) });
+
+  const commitEdit = (symbol: string, field: OverrideField) => {
+    if (!editingCell || editingCell.symbol !== symbol || editingCell.field !== field) return;
+    const val = parseFloat(editingCell.value.replace(',', '.'));
+    if (!isNaN(val)) saveOverride(symbol, field, val);
+    setEditingCell(null);
+  };
+
+  const saveManual = (next: ManualPosition[]) => {
+    setManualPositions(next);
+    localStorage.setItem(LS_MANUAL, JSON.stringify(next));
+  };
+
+  const addManualRow = () => {
+    setManualRowError('');
+    const sym = newSymbol.trim().toUpperCase();
+    const qty = parseFloat(newQty.replace(',', '.'));
+    const avg = parseFloat(newAvgCost.replace(',', '.'));
+    if (!sym)             { setManualRowError('נדרש שם נייר ערך'); return; }
+    if (isNaN(qty) || qty <= 0) { setManualRowError('כמות לא תקינה'); return; }
+    if (isNaN(avg) || avg <= 0) { setManualRowError('עלות לא תקינה'); return; }
+    const next = [...manualPositions, { id: `m-${Date.now()}`, symbol: sym, quantityHeld: qty, avgCostPerShare: avg }];
+    saveManual(next);
+    setAddingRow(false);
+    setNewSymbol(''); setNewQty(''); setNewAvgCost('');
+  };
+
+  const deleteManualRow = (id: string) => saveManual(manualPositions.filter(m => m.id !== id));
+
+  // Load persisted stock transactions from server on mount
+  useEffect(() => {
+    api.getStockTransactions()
+      .then(saved => { if (saved.length > 0) setTransactions(saved); })
+      .catch(() => {/* offline — start empty */})
+      .finally(() => setLoadingStored(false));
+  }, []);
+
   // Computed positions (weighted avg cost, realized P&L)
   const positions = useMemo(() => computePositions(transactions), [transactions]);
 
-  // Enrich positions with live prices
+  // All held symbols (from transactions + manual)
+  const allHeldSymbols = useMemo(() => {
+    const fromTx  = Object.values(positions).filter(p => p.quantityHeld > 0.0001).map(p => p.symbol);
+    const fromMan = manualPositions.map(m => m.symbol);
+    return [...new Set([...fromTx, ...fromMan])];
+  }, [positions, manualPositions]);
+
+  // Merge transaction-derived + manual positions, both enriched with live prices
   const enrichedPositions = useMemo<Position[]>(() => {
-    return Object.values(positions).map(p => {
-      if (p.quantityHeld <= 0.0001) return p;
-      const q = quotes.find(q => q.symbol === p.symbol);
-      if (!q) return p;
+    const enrichOne = (p: Position, q?: Quote): Position => {
+      if (!q || p.quantityHeld <= 0.0001) return p;
       const currentValue  = q.price * p.quantityHeld;
       const unrealizedPnL = currentValue - p.costBasis;
-      return {
+      return { ...p, currentPrice: q.price, currentValue, unrealizedPnL,
+        unrealizedPct: p.costBasis > 0 ? (unrealizedPnL / p.costBasis) * 100 : 0,
+        dailyChangePct: q.changePercent };
+    };
+
+    const quoteMap = new Map(quotes.map(q => [q.symbol, q]));
+
+    // Build map from TX-derived positions
+    const bySymbol = new Map<string, Position>(
+      Object.values(positions).map(p => [p.symbol, p])
+    );
+
+    // Merge every manual position into the map
+    for (const m of manualPositions) {
+      const manualCost = m.avgCostPerShare * m.quantityHeld;
+      if (bySymbol.has(m.symbol)) {
+        // Symbol exists in TX data — add the manual qty/cost on top
+        const ex = bySymbol.get(m.symbol)!;
+        const newHeld      = ex.quantityHeld + m.quantityHeld;
+        const newCostBasis = ex.costBasis    + manualCost;
+        bySymbol.set(m.symbol, {
+          ...ex,
+          quantityHeld:    newHeld,
+          costBasis:       newCostBasis,
+          avgCostPerShare: newHeld > 0 ? newCostBasis / newHeld : 0,
+          totalBought:     ex.totalBought + manualCost,
+        });
+      } else {
+        // New symbol — add as standalone manual position
+        bySymbol.set(m.symbol, manualToPosition(m));
+      }
+    }
+
+    // Apply per-field overrides — user edits take precedence over computed values
+    for (const [sym, ov] of Object.entries(positionOverrides)) {
+      if (!bySymbol.has(sym)) continue;
+      const p   = bySymbol.get(sym)!;
+      const qty = ov.quantityHeld      ?? p.quantityHeld;
+      const avg = ov.avgCostPerShare   ?? p.avgCostPerShare;
+      bySymbol.set(sym, {
         ...p,
-        currentPrice:   q.price,
-        currentValue,
-        unrealizedPnL,
-        unrealizedPct:  p.costBasis > 0 ? (unrealizedPnL / p.costBasis) * 100 : 0,
-        dailyChangePct: q.changePercent,
-      };
-    });
-  }, [positions, quotes]);
+        quantityHeld:    qty,
+        avgCostPerShare: avg,
+        costBasis:       avg * qty,
+        realizedPnL:     ov.realizedPnL ?? p.realizedPnL,
+        dividends:       ov.dividends   ?? p.dividends,
+      });
+    }
 
-  const totals = useMemo(() => aggregateTotals(positions, enrichedPositions), [positions, enrichedPositions]);
+    return Array.from(bySymbol.values()).map(p => enrichOne(p, quoteMap.get(p.symbol)));
+  }, [positions, manualPositions, quotes, positionOverrides]);
 
-  // Fetch live quotes for all held symbols after transactions load
+  const totals = useMemo(() => aggregateTotals(enrichedPositions), [enrichedPositions]);
+
+  // Fetch live quotes whenever held symbols change
   useEffect(() => {
-    const held = Object.values(positions).filter(p => p.quantityHeld > 0.0001).map(p => p.symbol);
-    if (held.length === 0) { setQuotes([]); return; }
+    if (allHeldSymbols.length === 0) { setQuotes([]); return; }
     setQuotesLoading(true);
     setQuotesError(null);
-    fetch(`${BASE}/portfolio/quotes?symbols=${held.join(',')}`)
+    fetch(`${BASE}/portfolio/quotes?symbols=${allHeldSymbols.join(',')}`)
       .then(r => r.json())
       .then((data: Quote[]) => { setQuotes(data); setQuotesUpdated(new Date()); })
       .catch(e => setQuotesError(String(e)))
       .finally(() => setQuotesLoading(false));
-  }, [positions]);
+  }, [allHeldSymbols]);
 
   const handleFile = async (file: File) => {
     setUploading(true);
     setUploadError(null);
     setAnalysis(null);
-    setQuotes([]);
     setFileName(file.name);
     try {
-      const txs = await parseFile(file);
-      if (txs.length === 0) throw new Error('לא נמצאו פעולות בקובץ — ודא שהקובץ מכיל דוח תנועות');
-      setTransactions(txs);
+      const newTxs = await parseFile(file);
+      if (newTxs.length === 0) throw new Error('לא נמצאו פעולות בקובץ — ודא שהקובץ מכיל דוח תנועות');
+
+      // Send new transactions to server — server merges and deduplicates
+      const result = await api.saveStockTransactions(newTxs);
+      console.log(`[portfolio] Uploaded ${newTxs.length} txs, ${result.added} new added, ${result.saved} total`);
+
+      // Reload full merged set from server as source of truth
+      const all = await api.getStockTransactions();
+      setTransactions(all);
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -294,11 +447,10 @@ const PortfolioTab: FC = () => {
   };
 
   const handleRefreshQuotes = () => {
-    const held = Object.values(positions).filter(p => p.quantityHeld > 0.0001).map(p => p.symbol);
-    if (held.length === 0) return;
+    if (allHeldSymbols.length === 0) return;
     setQuotesLoading(true);
     setQuotesError(null);
-    fetch(`${BASE}/portfolio/quotes?symbols=${held.join(',')}`)
+    fetch(`${BASE}/portfolio/quotes?symbols=${allHeldSymbols.join(',')}`)
       .then(r => r.json())
       .then((data: Quote[]) => { setQuotes(data); setQuotesUpdated(new Date()); })
       .catch(e => setQuotesError(String(e)))
@@ -382,9 +534,21 @@ const PortfolioTab: FC = () => {
   const totalPnL    = totals.totalUnrealized + totals.totalRealized;
   const totalPnLPct = totals.totalBought > 0 ? (totalPnL / totals.totalBought) * 100 : 0;
 
-  // ── Upload zone ─────────────────────────────────────────────────────────────
+  const hasData = transactions.length > 0 || manualPositions.length > 0;
 
-  if (transactions.length === 0) {
+  // ── Loading state (waiting for server on first mount) ────────────────────────
+
+  if (loadingStored) {
+    return (
+      <div className="flex items-center justify-center py-20 text-sm text-gray-400 animate-pulse">
+        ⏳ טוען נתונים שמורים...
+      </div>
+    );
+  }
+
+  // ── Upload zone (full screen when no data at all) ────────────────────────────
+
+  if (!hasData) {
     return (
       <div className="space-y-4">
         <div
@@ -414,6 +578,33 @@ const PortfolioTab: FC = () => {
             ⚠️ {uploadError}
           </div>
         )}
+
+        {/* Allow adding manual positions even before uploading a file */}
+        <div className="bg-white rounded-xl border border-dashed border-gray-200 p-4 text-center">
+          <p className="text-xs text-gray-400 mb-2">או הוסף עמדות ידנית ללא קובץ</p>
+          <button
+            onClick={() => { setAddingRow(true); setNewSymbol(''); setNewQty(''); setNewAvgCost(''); }}
+            className="text-xs text-blue-600 hover:text-blue-800 font-medium underline"
+          >
+            + הוסף שורה ידנית
+          </button>
+          {addingRow && (
+            <div className="mt-3 flex items-center gap-2 justify-center flex-wrap">
+              <input autoFocus value={newSymbol} onChange={e => setNewSymbol(e.target.value.toUpperCase())}
+                onKeyDown={e => e.key === 'Enter' && addManualRow()}
+                placeholder="VOO" className="w-20 border border-blue-300 rounded px-2 py-1 text-xs font-bold uppercase focus:outline-none focus:ring-1 focus:ring-blue-500" />
+              <input value={newQty} onChange={e => setNewQty(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && addManualRow()}
+                placeholder="כמות" className="w-20 border border-blue-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500" />
+              <input value={newAvgCost} onChange={e => setNewAvgCost(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && addManualRow()}
+                placeholder="עלות ממוצעת $" className="w-28 border border-blue-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500" />
+              <button onClick={addManualRow} className="bg-blue-600 text-white text-xs px-3 py-1 rounded hover:bg-blue-700">הוסף</button>
+              <button onClick={() => { setAddingRow(false); setManualRowError(''); }} className="text-gray-400 hover:text-red-500 text-xs">ביטול</button>
+              {manualRowError && <span className="text-xs text-red-500 w-full text-center">{manualRowError}</span>}
+            </div>
+          )}
+        </div>
       </div>
     );
   }
@@ -425,16 +616,49 @@ const PortfolioTab: FC = () => {
       {/* Header bar */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h2 className="text-base font-bold text-gray-800">📊 דוח תנועות — {fileName}</h2>
-          <p className="text-xs text-gray-400">{transactions.length} פעולות</p>
+          <h2 className="text-base font-bold text-gray-800">
+            {fileName ? `📊 דוח תנועות — ${fileName}` : '📊 תיק השקעות'}
+          </h2>
+          <p className="text-xs text-gray-400">
+            {transactions.length > 0 ? `${transactions.length} פעולות` : ''}
+            {transactions.length > 0 && manualPositions.length > 0 ? ' · ' : ''}
+            {manualPositions.length > 0 ? `${manualPositions.length} עמדות ידניות` : ''}
+          </p>
         </div>
-        <button
-          onClick={() => { setTransactions([]); setAnalysis(null); setFileName(null); }}
-          className="text-xs text-red-400 hover:text-red-600 underline"
-        >
-          טען קובץ חדש
-        </button>
+        <div className="flex items-center gap-3">
+          {/* Upload another file — always visible, server merges automatically */}
+          <div
+            className="flex items-center gap-1.5 text-xs text-blue-500 hover:text-blue-700 cursor-pointer border border-blue-200 rounded-lg px-3 py-1.5 hover:bg-blue-50 transition-colors"
+            onClick={() => inputRef.current?.click()}
+          >
+            📂 העלה קובץ נוסף
+            <input ref={inputRef} type="file" accept=".pdf,.csv,.txt" className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+          </div>
+          {/* Clear all — removes from server too */}
+          <button
+            onClick={() => {
+              api.clearStockTransactions().catch(() => {});
+              setTransactions([]); setAnalysis(null); setFileName(null);
+            }}
+            className="text-xs text-red-400 hover:text-red-600 underline"
+          >
+            נקה הכל
+          </button>
+        </div>
       </div>
+
+      {/* Upload / processing feedback */}
+      {uploading && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl px-5 py-3 text-sm text-blue-700 animate-pulse">
+          ⏳ מעבד קובץ ומחלץ נתונים עם AI...
+        </div>
+      )}
+      {uploadError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl px-5 py-3 text-sm text-red-600">
+          ⚠️ {uploadError}
+        </div>
+      )}
 
       {/* Quote status bar */}
       <div className="flex items-center gap-3 text-xs text-gray-400 flex-wrap">
@@ -515,9 +739,9 @@ const PortfolioTab: FC = () => {
                 <XAxis type="number" tickFormatter={v => `$${(v/1000).toFixed(0)}k`} tick={{ fontSize: 10 }} />
                 <YAxis type="category" dataKey="symbol" tick={{ fontSize: 11 }} width={50} />
                 <Tooltip formatter={(v: number) => fmt(v)} />
-                <Bar dataKey="pnl" name="רווח/הפסד" radius={[0,4,4,0]}>
-                  {pnlData.map((d, i) => <Cell key={i} fill={d.pnl >= 0 ? '#10b981' : '#ef4444'} />)}
-                </Bar>
+                <Legend />
+                <Bar dataKey="unrealized" name="לא ממומש" fill="#3b82f6" radius={[0,4,4,0]} />
+                <Bar dataKey="realized"   name="ממומש"    fill="#10b981" radius={[0,4,4,0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -544,88 +768,204 @@ const PortfolioTab: FC = () => {
       </div>
 
       {/* Holdings table */}
-      {enrichedPositions.length > 0 && (
+      {(enrichedPositions.length > 0 || manualPositions.length > 0 || true) && (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-gray-700">אחזקות ועמדות</h3>
-            <div className="flex gap-4 text-xs text-gray-400">
-              <span>✅ פתוחה</span><span>📦 סגורה</span>
+            <div className="flex items-center gap-4">
+              <div className="flex gap-3 text-xs text-gray-400">
+                <span>✅ מקובץ</span><span>✏️ ידני</span><span>📦 סגורה</span>
+              </div>
+              <button
+                onClick={() => { setAddingRow(true); setNewSymbol(''); setNewQty(''); setNewAvgCost(''); }}
+                className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium"
+              >
+                + הוסף שורה ידנית
+              </button>
             </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead className="bg-gray-50">
                 <tr>
+                  <th className="text-right px-4 py-2 font-medium text-gray-500 w-6"></th>
                   <th className="text-right px-4 py-2 font-medium text-gray-500">נייר</th>
-                  <th className="text-right px-4 py-2 font-medium text-gray-500">כמות מוחזקת</th>
-                  <th className="text-right px-4 py-2 font-medium text-gray-500">עלות ממוצעת</th>
+                  <th className="text-right px-4 py-2 font-medium text-gray-400">כמות מוחזקת ✏️</th>
+                  <th className="text-right px-4 py-2 font-medium text-gray-400">עלות ממוצעת ✏️</th>
+                  <th className="text-right px-4 py-2 font-medium text-gray-400">רווח ממומש ✏️</th>
+                  <th className="text-right px-4 py-2 font-medium text-gray-400">דיבידנדים ✏️</th>
                   <th className="text-right px-4 py-2 font-medium text-gray-500">שווי עלות</th>
                   <th className="text-right px-4 py-2 font-medium text-gray-500">מחיר כיום</th>
                   <th className="text-right px-4 py-2 font-medium text-gray-500">שווי כיום</th>
                   <th className="text-right px-4 py-2 font-medium text-gray-500">רווח לא ממומש</th>
-                  <th className="text-right px-4 py-2 font-medium text-gray-500">רווח ממומש</th>
-                  <th className="text-right px-4 py-2 font-medium text-gray-500">דיבידנדים</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {enrichedPositions
                   .sort((a, b) => (b.currentValue ?? b.costBasis) - (a.currentValue ?? a.costBasis))
-                  .map(p => (
-                    <tr key={p.symbol} className="hover:bg-gray-50">
-                      <td className="px-4 py-2.5">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs">{p.quantityHeld > 0.0001 ? '✅' : '📦'}</span>
-                          <span className="font-bold text-gray-800">{p.symbol}</span>
-                          {p.name && <span className="text-gray-400 truncate max-w-24"> {p.name}</span>}
-                        </div>
-                      </td>
-                      <td className="px-4 py-2.5 tabular-nums text-gray-700">
-                        {p.quantityHeld > 0.0001 ? p.quantityHeld.toFixed(4) : '—'}
-                      </td>
-                      <td className="px-4 py-2.5 tabular-nums text-gray-600">
-                        {p.avgCostPerShare > 0 ? `$${p.avgCostPerShare.toFixed(2)}` : '—'}
-                      </td>
-                      <td className="px-4 py-2.5 tabular-nums text-blue-600 font-medium">
-                        {p.costBasis > 0 ? fmt(p.costBasis) : '—'}
-                      </td>
-                      <td className="px-4 py-2.5 tabular-nums">
-                        {p.currentPrice ? (
-                          <span>
-                            ${p.currentPrice.toFixed(2)}
-                            {p.dailyChangePct !== undefined && (
-                              <span className={`mr-1 ${p.dailyChangePct >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                                {' '}({p.dailyChangePct >= 0 ? '+' : ''}{p.dailyChangePct.toFixed(2)}%)
-                              </span>
-                            )}
-                          </span>
-                        ) : <span className="text-gray-300">—</span>}
-                      </td>
-                      <td className="px-4 py-2.5 tabular-nums font-medium text-indigo-600">
-                        {p.currentValue ? fmt(p.currentValue) : '—'}
-                      </td>
-                      <td className={`px-4 py-2.5 tabular-nums font-semibold ${
-                        p.unrealizedPnL == null ? 'text-gray-300' :
-                        p.unrealizedPnL >= 0 ? 'text-green-600' : 'text-red-500'
-                      }`}>
-                        {p.unrealizedPnL != null ? (
-                          <span>
-                            {p.unrealizedPnL >= 0 ? '+' : ''}{fmt(p.unrealizedPnL)}
-                            {p.unrealizedPct !== undefined && (
-                              <span className="font-normal text-xs mr-1">
-                                {' '}({p.unrealizedPct >= 0 ? '+' : ''}{p.unrealizedPct.toFixed(1)}%)
-                              </span>
-                            )}
-                          </span>
-                        ) : '—'}
-                      </td>
-                      <td className={`px-4 py-2.5 tabular-nums font-semibold ${p.realizedPnL >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-                        {p.realizedPnL !== 0 ? `${p.realizedPnL >= 0 ? '+' : ''}${fmt(p.realizedPnL)}` : '—'}
-                      </td>
-                      <td className="px-4 py-2.5 tabular-nums text-yellow-600">
-                        {p.dividends > 0 ? fmt(p.dividends) : '—'}
-                      </td>
-                    </tr>
-                  ))}
+                  .map((p, idx) => {
+                    const isManual = manualPositions.some(m => m.symbol === p.symbol) &&
+                      !(positions[p.symbol]?.quantityBought > 0);
+                    return (
+                      <tr key={`${p.symbol}-${idx}`} className={`hover:bg-gray-50 ${isManual ? 'bg-blue-50/30' : ''}`}>
+                        <td className="px-3 py-2.5">
+                          {isManual ? (
+                            <button onClick={() => deleteManualRow(manualPositions.find(m => m.symbol === p.symbol)!.id)}
+                              className="text-gray-300 hover:text-red-500 transition-colors" title="הסר שורה">✕</button>
+                          ) : <span className="text-gray-200">·</span>}
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs">{isManual ? '✏️' : p.quantityHeld > 0.0001 ? '✅' : '📦'}</span>
+                            <span className="font-bold text-gray-800">{p.symbol}</span>
+                            {p.name && <span className="text-gray-400 truncate max-w-24"> {p.name}</span>}
+                          </div>
+                        </td>
+                        {/* ── Editable cell helper rendered inline ── */}
+                        {(['quantityHeld', 'avgCostPerShare', 'realizedPnL', 'dividends'] as OverrideField[]).map(field => {
+                          const isEditing = editingCell?.symbol === p.symbol && editingCell?.field === field;
+                          const raw: number = p[field] ?? 0;
+                          const display = field === 'quantityHeld'
+                            ? (raw > 0.0001 ? raw.toFixed(4) : '—')
+                            : field === 'avgCostPerShare'
+                              ? (raw > 0 ? `$${raw.toFixed(2)}` : '—')
+                              : (raw !== 0 ? `${raw >= 0 ? (field === 'realizedPnL' ? '+' : '') : ''}${fmt(raw)}` : '—');
+                          const colorClass = field === 'realizedPnL'
+                            ? (raw >= 0 ? 'text-green-600 font-semibold' : 'text-red-500 font-semibold')
+                            : field === 'dividends' ? 'text-yellow-600'
+                            : field === 'avgCostPerShare' ? 'text-gray-600'
+                            : 'text-gray-700';
+                          return (
+                            <td
+                              key={field}
+                              className={`px-4 py-2.5 tabular-nums ${colorClass} cursor-pointer`}
+                              onClick={() => !editingCell && startEdit(p.symbol, field, raw)}
+                            >
+                              {isEditing ? (
+                                <input
+                                  autoFocus
+                                  type="number" step="any"
+                                  value={editingCell!.value}
+                                  onChange={e => setEditingCell({ symbol: p.symbol, field, value: e.target.value })}
+                                  onBlur={() => commitEdit(p.symbol, field)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter')  commitEdit(p.symbol, field);
+                                    if (e.key === 'Escape') setEditingCell(null);
+                                  }}
+                                  className="w-24 border border-blue-400 rounded px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                />
+                              ) : (
+                                <span className="group flex items-center gap-1">
+                                  {display}
+                                  <span className="opacity-0 group-hover:opacity-40 text-blue-400 text-xs">✏️</span>
+                                </span>
+                              )}
+                            </td>
+                          );
+                        })}
+                        {/* שווי עלות — derived, read-only */}
+                        <td className="px-4 py-2.5 tabular-nums text-blue-600 font-medium">
+                          {p.costBasis > 0 ? fmt(p.costBasis) : '—'}
+                        </td>
+                        {/* מחיר כיום — live, read-only */}
+                        <td className="px-4 py-2.5 tabular-nums">
+                          {p.currentPrice ? (
+                            <span>
+                              ${p.currentPrice.toFixed(2)}
+                              {p.dailyChangePct !== undefined && (
+                                <span className={`mr-1 ${p.dailyChangePct >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                  {' '}({p.dailyChangePct >= 0 ? '+' : ''}{p.dailyChangePct.toFixed(2)}%)
+                                </span>
+                              )}
+                            </span>
+                          ) : <span className="text-gray-300">—</span>}
+                        </td>
+                        {/* שווי כיום — derived, read-only */}
+                        <td className="px-4 py-2.5 tabular-nums font-medium text-indigo-600">
+                          {p.currentValue ? fmt(p.currentValue) : '—'}
+                        </td>
+                        {/* רווח לא ממומש — derived, read-only */}
+                        <td className={`px-4 py-2.5 tabular-nums font-semibold ${
+                          p.unrealizedPnL == null ? 'text-gray-300' :
+                          p.unrealizedPnL >= 0 ? 'text-green-600' : 'text-red-500'
+                        }`}>
+                          {p.unrealizedPnL != null ? (
+                            <span>
+                              {p.unrealizedPnL >= 0 ? '+' : ''}{fmt(p.unrealizedPnL)}
+                              {p.unrealizedPct !== undefined && (
+                                <span className="font-normal text-xs mr-1">
+                                  {' '}({p.unrealizedPct >= 0 ? '+' : ''}{p.unrealizedPct.toFixed(1)}%)
+                                </span>
+                              )}
+                            </span>
+                          ) : '—'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                {/* ── Add row form ── */}
+                {addingRow && (
+                  <tr className="bg-blue-50 border-t-2 border-blue-200">
+                    <td className="px-3 py-2">
+                      <button onClick={() => setAddingRow(false)} className="text-gray-400 hover:text-red-500">✕</button>
+                    </td>
+                    <td className="px-2 py-2">
+                      <input
+                        autoFocus
+                        value={newSymbol}
+                        onChange={e => setNewSymbol(e.target.value.toUpperCase())}
+                        onKeyDown={e => e.key === 'Enter' && addManualRow()}
+                        placeholder="VOO"
+                        className="w-20 border border-blue-300 rounded px-2 py-1 text-xs font-bold uppercase focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                    </td>
+                    <td className="px-2 py-2">
+                      <input
+                        type="number" min="0" step="any"
+                        value={newQty}
+                        onChange={e => setNewQty(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && addManualRow()}
+                        placeholder="כמות"
+                        className="w-24 border border-blue-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                    </td>
+                    <td className="px-2 py-2">
+                      <input
+                        type="number" min="0" step="any"
+                        value={newAvgCost}
+                        onChange={e => setNewAvgCost(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && addManualRow()}
+                        placeholder="עלות ממוצעת $"
+                        className="w-28 border border-blue-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                    </td>
+                    <td className="px-2 py-2 text-xs text-gray-400 italic">
+                      {newQty && newAvgCost ? fmt(parseFloat(newQty) * parseFloat(newAvgCost)) : '—'}
+                    </td>
+                    <td colSpan={5} className="px-2 py-2">
+                      <button
+                        onClick={addManualRow}
+                        className="px-3 py-1 bg-blue-600 text-white rounded text-xs font-medium hover:bg-blue-700"
+                      >
+                        ✓ הוסף
+                      </button>
+                      {manualRowError
+                        ? <span className="text-xs text-red-500 mr-2">{manualRowError}</span>
+                        : <span className="text-xs text-gray-400 mr-2">שווי עלות, שווי כיום ורווח יחושבו אוטומטית</span>
+                      }
+                    </td>
+                  </tr>
+                )}
+
+                {/* ── Empty state ── */}
+                {enrichedPositions.length === 0 && !addingRow && (
+                  <tr>
+                    <td colSpan={10} className="px-4 py-6 text-center text-xs text-gray-400">
+                      אין נתונים — העלה קובץ דוח או הוסף שורה ידנית
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

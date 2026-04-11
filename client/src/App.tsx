@@ -138,12 +138,6 @@ function App() {
     load();
   }, [runCategorize]);
 
-  // Persist transactions whenever they change
-  useEffect(() => {
-    if (dbStatus !== 'ready' || transactions.length === 0) return;
-    api.saveTransactions(transactions).catch(() => {/* silent */});
-  }, [transactions, dbStatus]);
-
   // Persist portfolio whenever it changes
   useEffect(() => {
     if (dbStatus !== 'ready') return;
@@ -152,17 +146,23 @@ function App() {
 
   /**
    * Called when FileUpload gives us new transactions.
-   * Deduplicates against existing, then sends ALL incoming to AI for categorization.
+   * Deduplicates against existing, sends fresh ones to server (server merges),
+   * then categorizes the newly added ones.
    */
   const handleTransactionsLoaded = useCallback(async (incoming: Transaction[]) => {
+    let fresh: Transaction[] = [];
     setTransactions((prev) => {
       const existingIds = new Set(prev.map((t) => t.id));
-      const fresh = incoming.filter((t) => !existingIds.has(t.id));
+      fresh = incoming.filter((t) => !existingIds.has(t.id));
       return [...prev, ...fresh];
     });
-    // Categorize all incoming — avoids closure/timing issues with fresh computation
+    // Persist only the fresh ones — server merges with existing on disk
+    if (fresh.length > 0 && dbStatus === 'ready') {
+      api.saveTransactions(fresh).catch(() => {});
+    }
+    // Categorize fresh transactions
     if (incoming.length > 0) await runCategorize(incoming);
-  }, [runCategorize]);
+  }, [runCategorize, dbStatus]);
 
   /** Manual re-categorize — sends everything without a real category to AI */
   const handleCategorizeAll = useCallback(async () => {

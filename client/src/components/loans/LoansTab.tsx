@@ -42,7 +42,7 @@ const LOAN_TYPE_LABELS: Record<Loan['type'], string> = {
 // ---------------------------------------------------------------------------
 const HEADER_KEYWORDS = ['מסלול', 'ריבית', 'יתרה', 'קרן', 'תשלום', 'החזר'];
 
-const COL_MAP: Record<string, (keyof MortgageTrack)[]> = {
+const COL_MAP: Record<string, string[]> = {
   name: ['מסלול', 'סוג מסלול', 'שם מסלול'],
   interestRate: ['ריבית', 'שיעור ריבית'],
   outstanding: ['יתרת קרן', 'יתרה לפירעון', 'יתרת הקרן', 'יתרה'],

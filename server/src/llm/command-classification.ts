@@ -1,11 +1,14 @@
 /**
  * command-classification.ts
- * Pure LLM-based transaction classifier using Groq.
- * No keyword rules — the model decides from raw description + amount.
+ * Batched LLM classifier — sends up to CHUNK_SIZE transactions per Groq call
+ * instead of one call per transaction, reducing token usage by ~10x.
  */
+import { sanitizeText } from '../utils/sanitize';
 
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_URL   = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_MODEL = 'llama-3.1-8b-instant';
+const CHUNK_SIZE = 15;   // transactions per LLM call
+const CHUNK_DELAY_MS = 1200; // pause between chunks to stay within TPM
 
 export type TransactionCategory =
   | 'salary' | 'rental_income' | 'refund' | 'transfer_in'
@@ -37,113 +40,93 @@ export interface FewShotExample {
   category: TransactionCategory;
 }
 
-// ─── Groq call ───────────────────────────────────────────────────────────────
+// ─── Groq call ────────────────────────────────────────────────────────────────
 
-interface GroqMessage { role: 'system' | 'user' | 'assistant'; content: string; }
-
-async function callGroq(apiKey: string, messages: GroqMessage[]): Promise<string> {
+async function callGroq(apiKey: string, prompt: string): Promise<string> {
   const res = await fetch(GROQ_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
       model: GROQ_MODEL,
-      messages,
+      messages: [{ role: 'user', content: prompt }],
       temperature: 0.1,
-      max_tokens: 1024,
+      max_tokens: 800,
       response_format: { type: 'json_object' },
     }),
   });
-
-  const data = (await res.json()) as {
+  const data = await res.json() as {
     choices?: { message: { content: string } }[];
     error?: { message: string };
   };
-
   if (data.error) throw new Error(`Groq: ${data.error.message}`);
   return data.choices?.[0]?.message?.content ?? '{}';
 }
 
-// ─── System prompt ────────────────────────────────────────────────────────────
+// ─── Classify a single chunk of transactions in one LLM call ─────────────────
 
-const SYSTEM_PROMPT = `You are an expert classifier for Israeli bank transactions.
-Given a transaction description and amount, return the best category.
+async function classifyChunk(
+  apiKey: string,
+  chunk: TransactionInput[],
+  examples: FewShotExample[],
+): Promise<ClassificationResult[]> {
+  const examplesBlock = examples.length > 0
+    ? `Examples from this user:\n${examples.map(e => `  "${e.description}" | ${e.amount} → ${e.category}`).join('\n')}\n\n`
+    : '';
 
-Valid categories:
-- salary          : salary/wages received from employer
-- rental_income   : rent received from a tenant
-- refund          : refund, credit note, or check deposit
-- transfer_in     : incoming bank transfer (from another account)
-- mortgage        : mortgage payment to bank
-- rent_paid       : rent paid to landlord
-- home_expenses   : municipal tax (ארנונה), building committee (ועד בית), utilities for home
-- groceries       : supermarket, grocery store (שופרסל, רמי לוי, מגה, etc.)
-- food_restaurant : restaurant, café, fast food, food delivery (וולט, תן-ביס)
-- car             : fuel, parking, car insurance, garage, leasing
-- public_transport: train, bus, light rail (רכבת, אגד, דן, רב-קו)
-- subscriptions   : streaming/software subscriptions (Netflix, Spotify, Apple, etc.)
-- utilities       : phone, internet, electricity, water, gas bills
-- health          : doctor, pharmacy, health insurance, dental, clinic
-- shopping        : clothing, electronics, general retail
-- education       : tuition, courses, kindergarten, university
-- entertainment   : cinema, theater, sports, gym, leisure
-- travel          : flights, hotels, Airbnb, travel agencies
-- investment      : stocks, ETF, crypto, savings deposits
-- other           : anything that doesn't fit above
+  const txLines = chunk
+    .map(tx => `  ${tx.id}: "${sanitizeText(tx.description)}" | ${tx.amount}`)
+    .join('\n');
+
+  const prompt = `You are an expert classifier for Israeli bank transactions.
+
+${examplesBlock}Valid categories:
+salary, rental_income, refund, transfer_in, mortgage, rent_paid, home_expenses,
+groceries, food_restaurant, car, public_transport, subscriptions, utilities,
+health, shopping, education, entertainment, travel, investment, other
 
 Rules:
-1. "העברת מ" / "העברה מ" → transfer_in (money arriving from another account)
-2. "משכורת" / "שכר" → salary
-3. "הפקדת שיק/צ'ק" → refund
-4. "קבלת תשלום" → transfer_in
-5. Rent received from tenant → rental_income; rent paid to landlord → rent_paid
-6. Base decision on description text — DO NOT rely on amount sign.
+- "העברת מ"/"קבלת תשלום" → transfer_in
+- "משכורת"/"שכר" → salary
+- "שופרסל"/"רמי לוי"/"מגה"/"victory" → groceries
+- "ארנונה"/"ועד בית" → home_expenses
+- mortgage payment to bank → mortgage
+- Base decision on description. Return confidence: high/medium/low.
 
-Return JSON: {"category":"<key>","confidence":"high|medium|low","reasoning":"<one sentence>"}`;
+Classify these transactions. Return JSON: {"results":[{"id":"...","category":"...","confidence":"high|medium|low"},...]}
 
-// ─── Single transaction ───────────────────────────────────────────────────────
+Transactions:
+${txLines}`;
+
+  const raw = await callGroq(apiKey, prompt);
+
+  let parsed: { results?: { id: string; category: string; confidence: string }[] } = {};
+  try { parsed = JSON.parse(raw); } catch { /* fallback below */ }
+
+  const resultMap = new Map((parsed.results ?? []).map(r => [r.id, r]));
+
+  return chunk.map(tx => {
+    const r = resultMap.get(tx.id);
+    return {
+      id:          tx.id,
+      description: tx.description,
+      amount:      tx.amount,
+      category:    (r?.category as TransactionCategory) ?? 'other',
+      confidence:  (r?.confidence as 'high' | 'medium' | 'low') ?? 'low',
+      reasoning:   '',
+    };
+  });
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
 
 export async function classifyOne(
   apiKey: string,
   tx: TransactionInput,
   examples: FewShotExample[] = [],
 ): Promise<ClassificationResult> {
-  const messages: GroqMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }];
-
-  // Inject few-shot examples if provided
-  if (examples.length > 0) {
-    const exBlock = examples
-      .map(e => `Description: "${e.description}" | Amount: ${e.amount} → ${e.category}`)
-      .join('\n');
-    messages.push({
-      role: 'user',
-      content: `Here are labeled examples from this user's actual transactions:\n${exBlock}`,
-    });
-    messages.push({ role: 'assistant', content: 'Understood. I will use these patterns.' });
-  }
-
-  messages.push({
-    role: 'user',
-    content: `Classify this transaction:\nDescription: "${tx.description}"\nAmount: ${tx.amount}`,
-  });
-
-  const raw = await callGroq(apiKey, messages);
-  let parsed: { category?: string; confidence?: string; reasoning?: string } = {};
-  try { parsed = JSON.parse(raw); } catch { /* fallback below */ }
-
-  return {
-    id: tx.id,
-    description: tx.description,
-    amount: tx.amount,
-    category: (parsed.category as TransactionCategory) ?? 'other',
-    confidence: (parsed.confidence as 'high' | 'medium' | 'low') ?? 'low',
-    reasoning: parsed.reasoning ?? '',
-  };
+  const [result] = await classifyChunk(apiKey, [tx], examples);
+  return result;
 }
-
-// ─── Batch (respects Groq TPM by doing one request per tx with a delay) ──────
 
 export async function classifyBatch(
   apiKey: string,
@@ -153,26 +136,32 @@ export async function classifyBatch(
 ): Promise<ClassificationResult[]> {
   const results: ClassificationResult[] = [];
 
-  for (let i = 0; i < transactions.length; i++) {
-    if (i > 0) await new Promise(r => setTimeout(r, 200)); // ~5 req/s, well within 30 RPM
+  for (let i = 0; i < transactions.length; i += CHUNK_SIZE) {
+    if (i > 0) await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
+
+    const chunk = transactions.slice(i, i + CHUNK_SIZE);
     try {
-      const result = await classifyOne(apiKey, transactions[i], examples);
-      results.push(result);
-    } catch {
-      results.push({
-        ...transactions[i],
-        category: 'other',
-        confidence: 'low',
-        reasoning: 'Classification failed',
-      });
+      const chunkResults = await classifyChunk(apiKey, chunk, examples);
+      results.push(...chunkResults);
+    } catch (err) {
+      // On rate-limit error, wait 10s and retry once
+      if (String(err).includes('rate') || String(err).includes('limit')) {
+        await new Promise(r => setTimeout(r, 10000));
+        try {
+          results.push(...await classifyChunk(apiKey, chunk, examples));
+        } catch {
+          results.push(...chunk.map(tx => ({ ...tx, category: 'other' as TransactionCategory, confidence: 'low' as const, reasoning: 'rate limit' })));
+        }
+      } else {
+        results.push(...chunk.map(tx => ({ ...tx, category: 'other' as TransactionCategory, confidence: 'low' as const, reasoning: 'error' })));
+      }
     }
-    onProgress?.(i + 1, transactions.length);
+
+    onProgress?.(Math.min(i + CHUNK_SIZE, transactions.length), transactions.length);
   }
 
   return results;
 }
-
-// ─── Build few-shot examples from already-classified transactions ─────────────
 
 export function buildExamples(
   classified: { description: string; amount: number; category: TransactionCategory }[],
@@ -180,7 +169,6 @@ export function buildExamples(
 ): FewShotExample[] {
   const seen = new Map<TransactionCategory, number>();
   const examples: FewShotExample[] = [];
-
   for (const tx of classified) {
     const count = seen.get(tx.category) ?? 0;
     if (count < maxPerCategory) {
@@ -188,6 +176,5 @@ export function buildExamples(
       seen.set(tx.category, count + 1);
     }
   }
-
   return examples;
 }

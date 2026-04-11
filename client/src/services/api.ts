@@ -1,4 +1,4 @@
-import type { Transaction, Portfolio, GeminiInsight, TransactionCategory } from '../types';
+import type { Transaction, Portfolio, GeminiInsight, TransactionCategory, StockTransaction } from '../types';
 
 const BASE = 'http://localhost:3001/api';
 
@@ -12,15 +12,25 @@ const request = async <T>(path: string, options?: RequestInit): Promise<T> => {
 };
 
 export const api = {
-  // --- Transactions ---
+  // --- Bank transactions ---
   getTransactions: () => request<Transaction[]>('/transactions'),
-  // Replaces all stored transactions with the current state
+  // Merges new transactions with server-stored ones (server deduplicates by id)
   saveTransactions: (txs: Transaction[]) =>
-    request<{ saved: number }>('/transactions', {
+    request<{ saved: number; added: number }>('/transactions', {
       method: 'POST',
       body: JSON.stringify(txs),
     }),
   clearTransactions: () => request<{ cleared: boolean }>('/transactions', { method: 'DELETE' }),
+
+  // --- Stock transactions ---
+  getStockTransactions: () => request<StockTransaction[]>('/stock-transactions'),
+  // Merges new stock transactions (server deduplicates by content key)
+  saveStockTransactions: (txs: StockTransaction[]) =>
+    request<{ saved: number; added: number }>('/stock-transactions', {
+      method: 'POST',
+      body: JSON.stringify(txs),
+    }),
+  clearStockTransactions: () => request<{ cleared: boolean }>('/stock-transactions', { method: 'DELETE' }),
 
   // --- Portfolio ---
   getPortfolio: () => request<Portfolio | null>('/portfolio'),
