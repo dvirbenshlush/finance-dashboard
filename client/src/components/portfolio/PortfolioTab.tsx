@@ -1,4 +1,4 @@
-import { type FC, useRef, useState, useMemo, useEffect } from 'react';
+import { type FC, Fragment, useRef, useState, useMemo, useEffect } from 'react';
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend,
@@ -17,6 +17,8 @@ const BASE = 'http://localhost:3001/api';
 
 const fmt = (v: number, currency = 'USD') =>
   new Intl.NumberFormat('he-IL', { style: 'currency', currency, maximumFractionDigits: 0 }).format(v);
+
+const fmtILS = (v: number) => fmt(v, 'ILS');
 
 const COLORS = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316','#84cc16','#ec4899','#6366f1'];
 
@@ -333,6 +335,28 @@ const PortfolioTab: FC = () => {
 
   const deleteManualRow = (id: string) => saveManual(manualPositions.filter(m => m.id !== id));
 
+  // ── Forex (USD/ILS historical rates) ─────────────────────────────────────────
+  const [forexRates, setForexRates] = useState<Record<string, number>>({});
+  const [forexLoading, setForexLoading] = useState(false);
+
+  // Collapse state — which symbols have their transaction history expanded
+  const [expandedSymbols, setExpandedSymbols] = useState<Set<string>>(new Set());
+  const toggleExpanded = (symbol: string) =>
+    setExpandedSymbols(prev => {
+      const next = new Set(prev);
+      next.has(symbol) ? next.delete(symbol) : next.add(symbol);
+      return next;
+    });
+
+  // Return the closest available USD/ILS rate on or before the given date
+  const getRateForDate = (date: string): number | null => {
+    if (forexRates[date]) return forexRates[date];
+    const sorted = Object.keys(forexRates).sort();
+    let best: string | null = null;
+    for (const d of sorted) { if (d <= date) best = d; else break; }
+    return best ? forexRates[best] : null;
+  };
+
   // Load persisted stock transactions from server on mount
   useEffect(() => {
     api.getStockTransactions()
@@ -340,6 +364,20 @@ const PortfolioTab: FC = () => {
       .catch(() => {/* offline — start empty */})
       .finally(() => setLoadingStored(false));
   }, []);
+
+  // Fetch USD/ILS historical rates whenever transaction history changes
+  useEffect(() => {
+    if (transactions.length === 0) return;
+    const dates = transactions.map(t => t.date).sort();
+    const from  = dates[0];
+    const to    = new Date().toISOString().slice(0, 10);
+    setForexLoading(true);
+    fetch(`${BASE}/portfolio/forex-rates?from=${from}&to=${to}`)
+      .then(r => r.json())
+      .then((data: Record<string, number>) => setForexRates(data))
+      .catch(e => console.warn('[forex-rates]', e))
+      .finally(() => setForexLoading(false));
+  }, [transactions]);
 
   // Computed positions (weighted avg cost, realized P&L)
   const positions = useMemo(() => computePositions(transactions), [transactions]);
@@ -410,6 +448,28 @@ const PortfolioTab: FC = () => {
   }, [positions, manualPositions, quotes, positionOverrides]);
 
   const totals = useMemo(() => aggregateTotals(enrichedPositions), [enrichedPositions]);
+
+  // ILS summary — converts every transaction to shekels at the historical USD/ILS rate
+  const ilsSummary = useMemo(() => {
+    if (Object.keys(forexRates).length === 0) return null;
+    let investedILS = 0, proceedsILS = 0, dividendsILS = 0, feesILS = 0;
+    for (const tx of transactions) {
+      const rate = getRateForDate(tx.date);
+      if (!rate) continue;
+      const amtILS = Math.abs(tx.amount) * rate;
+      if      (tx.action === 'buy')      investedILS   += amtILS;
+      else if (tx.action === 'sell')     proceedsILS   += amtILS;
+      else if (tx.action === 'dividend') dividendsILS  += amtILS;
+      else if (tx.action === 'fee')      feesILS       += amtILS;
+    }
+    const today      = new Date().toISOString().slice(0, 10);
+    const currentRate = getRateForDate(today) ?? 0;
+    const currentValueILS = totals.totalCurrentValue * currentRate;
+    // Total return: current portfolio + all proceeds + dividends − fees − invested
+    const totalReturnILS = currentValueILS + proceedsILS + dividendsILS - feesILS - investedILS;
+    return { investedILS, proceedsILS, dividendsILS, feesILS, currentValueILS, currentRate, totalReturnILS };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forexRates, transactions, totals.totalCurrentValue]);
 
   // Fetch live quotes whenever held symbols change
   useEffect(() => {
@@ -806,13 +866,26 @@ const PortfolioTab: FC = () => {
                   .map((p, idx) => {
                     const isManual = manualPositions.some(m => m.symbol === p.symbol) &&
                       !(positions[p.symbol]?.quantityBought > 0);
+                    const isExpanded = expandedSymbols.has(p.symbol);
+                    const symTxs = transactions
+                      .filter(t => t.symbol.toUpperCase() === p.symbol && ['buy','sell','dividend','fee'].includes(t.action))
+                      .sort((a, b) => a.date.localeCompare(b.date));
                     return (
-                      <tr key={`${p.symbol}-${idx}`} className={`hover:bg-gray-50 ${isManual ? 'bg-blue-50/30' : ''}`}>
+                      <Fragment key={`${p.symbol}-${idx}`}>
+                      <tr className={`hover:bg-gray-50 ${isManual ? 'bg-blue-50/30' : ''} ${isExpanded ? 'bg-blue-50/20' : ''}`}>
                         <td className="px-3 py-2.5">
-                          {isManual ? (
-                            <button onClick={() => deleteManualRow(manualPositions.find(m => m.symbol === p.symbol)!.id)}
-                              className="text-gray-300 hover:text-red-500 transition-colors" title="הסר שורה">✕</button>
-                          ) : <span className="text-gray-200">·</span>}
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => toggleExpanded(p.symbol)}
+                              className="text-gray-400 hover:text-blue-500 transition-colors text-xs w-4"
+                              title="היסטוריית פעולות"
+                            >{isExpanded ? '▼' : '▶'}</button>
+                            {isManual
+                              ? <button onClick={() => deleteManualRow(manualPositions.find(m => m.symbol === p.symbol)!.id)}
+                                  className="text-gray-300 hover:text-red-500 transition-colors text-xs" title="הסר שורה">✕</button>
+                              : <span className="text-gray-200 text-xs">·</span>
+                            }
+                          </div>
                         </td>
                         <td className="px-4 py-2.5">
                           <div className="flex items-center gap-1.5">
@@ -901,6 +974,90 @@ const PortfolioTab: FC = () => {
                           ) : '—'}
                         </td>
                       </tr>
+
+                      {/* ── Collapsed transaction history ── */}
+                      {isExpanded && (
+                        <tr>
+                          <td colSpan={10} className="p-0 border-b border-blue-100">
+                            <div className="bg-gradient-to-b from-blue-50/60 to-white px-8 py-4">
+                              <p className="text-xs font-semibold text-blue-700 mb-2">
+                                היסטוריית פעולות — {p.symbol}
+                                {forexLoading && <span className="mr-2 text-gray-400 font-normal">טוען שערי חליפין…</span>}
+                              </p>
+                              {symTxs.length === 0
+                                ? <p className="text-xs text-gray-400">אין פעולות מפורטות בדוח עבור נייר זה</p>
+                                : (
+                                  <table className="w-full text-xs mb-4">
+                                    <thead>
+                                      <tr className="text-gray-400 border-b border-gray-200">
+                                        <th className="text-right pb-1 pr-3">תאריך</th>
+                                        <th className="text-right pb-1 pr-3">פעולה</th>
+                                        <th className="text-right pb-1 pr-3">כמות</th>
+                                        <th className="text-right pb-1 pr-3">מחיר $</th>
+                                        <th className="text-right pb-1 pr-3">סכום $</th>
+                                        <th className="text-right pb-1 pr-3">שע"ח ₪/$</th>
+                                        <th className="text-right pb-1">סכום ₪</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-100">
+                                      {symTxs.map(tx => {
+                                        const rate  = getRateForDate(tx.date);
+                                        const amtUSD = Math.abs(tx.amount);
+                                        const amtILS = rate ? amtUSD * rate : null;
+                                        return (
+                                          <tr key={tx.id} className="hover:bg-blue-50/40">
+                                            <td className="py-1.5 pr-3 tabular-nums text-gray-500">{tx.date}</td>
+                                            <td className="py-1.5 pr-3">
+                                              <span className={`px-1.5 py-0.5 rounded text-xs ${ACTION_COLOR[tx.action] ?? 'bg-gray-100 text-gray-600'}`}>
+                                                {ACTION_LABEL[tx.action] ?? tx.action}
+                                              </span>
+                                            </td>
+                                            <td className="py-1.5 pr-3 tabular-nums text-gray-700">{tx.quantity != null ? tx.quantity.toFixed(4) : '—'}</td>
+                                            <td className="py-1.5 pr-3 tabular-nums text-gray-600">{tx.price != null ? `$${tx.price.toFixed(2)}` : '—'}</td>
+                                            <td className={`py-1.5 pr-3 tabular-nums font-medium ${tx.action === 'buy' ? 'text-blue-600' : tx.action === 'sell' ? 'text-green-600' : 'text-gray-600'}`}>
+                                              {tx.action === 'buy' ? '-' : tx.action === 'sell' ? '+' : ''}{fmt(amtUSD)}
+                                            </td>
+                                            <td className="py-1.5 pr-3 tabular-nums text-gray-400">{rate ? rate.toFixed(3) : '—'}</td>
+                                            <td className={`py-1.5 tabular-nums font-medium ${tx.action === 'buy' ? 'text-blue-600' : tx.action === 'sell' ? 'text-green-600' : 'text-gray-600'}`}>
+                                              {amtILS != null ? `${tx.action === 'buy' ? '-' : tx.action === 'sell' ? '+' : ''}${fmtILS(amtILS)}` : '—'}
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                )
+                              }
+
+                              {/* Per-position ILS mini-summary */}
+                              {(() => {
+                                let posInvILS = 0, posSoldILS = 0, posDivILS = 0;
+                                for (const tx of symTxs) {
+                                  const rate = getRateForDate(tx.date);
+                                  if (!rate) continue;
+                                  const a = Math.abs(tx.amount) * rate;
+                                  if (tx.action === 'buy')      posInvILS  += a;
+                                  else if (tx.action === 'sell')  posSoldILS += a;
+                                  else if (tx.action === 'dividend') posDivILS += a;
+                                }
+                                const rate = getRateForDate(new Date().toISOString().slice(0,10)) ?? 0;
+                                const curValILS = (p.currentValue ?? p.costBasis) * rate;
+                                const pnlILS = curValILS + posSoldILS + posDivILS - posInvILS;
+                                return (
+                                  <div className="flex flex-wrap gap-4 text-xs border-t border-blue-100 pt-2">
+                                    <span className="text-gray-500">הושקע: <strong className="text-blue-600">{fmtILS(posInvILS)}</strong></span>
+                                    <span className="text-gray-500">מומש: <strong className="text-green-600">{fmtILS(posSoldILS)}</strong></span>
+                                    <span className="text-gray-500">דיבידנדים: <strong className="text-yellow-600">{fmtILS(posDivILS)}</strong></span>
+                                    <span className="text-gray-500">שווי כיום: <strong className="text-indigo-600">{fmtILS(curValILS)}</strong></span>
+                                    <span className="text-gray-500">רווח/הפסד ₪: <strong className={pnlILS >= 0 ? 'text-green-600' : 'text-red-500'}>{pnlILS >= 0 ? '+' : ''}{fmtILS(pnlILS)}</strong></span>
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      </Fragment>
                     );
                   })}
 
@@ -1012,6 +1169,33 @@ const PortfolioTab: FC = () => {
           </div>
         </details>
       </div>
+
+      {/* ── ILS Summary ── */}
+      {ilsSummary && (
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold text-gray-700">סיכום בשקלים ₪</h3>
+            <span className="text-xs text-gray-400">שע"ח כיום: ₪{ilsSummary.currentRate.toFixed(3)} ל-$1</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+            <KpiCard label="סה״כ הושקע ₪"     value={fmtILS(ilsSummary.investedILS)}     color="text-blue-600" />
+            <KpiCard label="סה״כ מומש ₪"       value={fmtILS(ilsSummary.proceedsILS)}     color="text-green-600" />
+            <KpiCard label="דיבידנדים ₪"        value={fmtILS(ilsSummary.dividendsILS)}    color="text-yellow-600" />
+            <KpiCard label="שווי תיק כיום ₪"   value={fmtILS(ilsSummary.currentValueILS)} color="text-indigo-600" />
+            <KpiCard
+              label="רווח / הפסד כולל ₪"
+              value={`${ilsSummary.totalReturnILS >= 0 ? '+' : ''}${fmtILS(ilsSummary.totalReturnILS)}`}
+              color={ilsSummary.totalReturnILS >= 0 ? 'text-green-600' : 'text-red-500'}
+              sub={ilsSummary.investedILS > 0
+                ? `${((ilsSummary.totalReturnILS / ilsSummary.investedILS) * 100).toFixed(1)}% על ההשקעה`
+                : undefined}
+            />
+          </div>
+          <p className="text-xs text-gray-400 mt-3">
+            * מחושב לפי שערי USD/ILS היסטוריים בתאריך כל פעולה (מקור: Yahoo Finance)
+          </p>
+        </div>
+      )}
 
       {/* AI Analysis section */}
       <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">

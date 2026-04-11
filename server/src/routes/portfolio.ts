@@ -134,6 +134,38 @@ ${JSON.stringify(summary, null, 2)}
   }
 });
 
+// ── GET /api/portfolio/forex-rates?from=YYYY-MM-DD&to=YYYY-MM-DD ─────────────
+// Returns daily USD/ILS closing rates for the requested range from Yahoo Finance.
+router.get('/forex-rates', async (req: Request, res: Response) => {
+  const from = String(req.query.from ?? '');
+  const to   = String(req.query.to   ?? new Date().toISOString().slice(0, 10));
+  if (!from) { res.status(400).json({ error: '"from" date required' }); return; }
+
+  const period1 = Math.floor(new Date(from).getTime() / 1000) - 86400;
+  const period2 = Math.floor(new Date(to).getTime()   / 1000) + 86400;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/USDILS=X?interval=1d&period1=${period1}&period2=${period2}`;
+
+  const r = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
+  });
+  if (!r.ok) { res.status(502).json({ error: `Yahoo HTTP ${r.status}` }); return; }
+
+  const data = await r.json() as {
+    chart?: { result?: [{ timestamp: number[]; indicators: { quote: [{ close: (number | null)[] }] } }] }
+  };
+  const result = data?.chart?.result?.[0];
+  if (!result) { res.json({}); return; }
+
+  const rates: Record<string, number> = {};
+  result.timestamp.forEach((ts, i) => {
+    const close = result.indicators.quote[0].close[i];
+    if (close != null) rates[new Date(ts * 1000).toISOString().slice(0, 10)] = close;
+  });
+
+  console.log(`[forex-rates] ${from}→${to}: ${Object.keys(rates).length} data points`);
+  res.json(rates);
+});
+
 // ── GET /api/portfolio/quotes?symbols=VOO,AAPL,IBIT ──────────────────────────
 // Proxies Yahoo Finance — no API key required.
 router.get('/quotes', async (req: Request, res: Response) => {
