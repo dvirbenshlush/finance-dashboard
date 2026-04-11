@@ -700,6 +700,11 @@ const PortfolioTab: FC = () => {
             onClick={() => {
               api.clearStockTransactions().catch(() => {});
               setTransactions([]); setAnalysis(null); setFileName(null);
+              saveManual([]);
+              setPositionOverrides({});
+              localStorage.removeItem(LS_OVERRIDES);
+              setExpandedSymbols(new Set());
+              setForexRates({});
             }}
             className="text-xs text-red-400 hover:text-red-600 underline"
           >
