@@ -46,9 +46,9 @@ interface PropSettings {
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const LS_COSTS     = 'riseup_property_costs';
-const LS_DOCS      = 'riseup_property_docs';
-const LS_PROP_SETS = 'riseup_property_settings';
+const LS_COSTS     = 'otzar_property_costs';
+const LS_DOCS      = 'otzar_property_docs';
+const LS_PROP_SETS = 'otzar_property_settings';
 
 const COST_META: Record<CostCategory, { label: string; icon: string }> = {
   management:        { label: 'חברת ניהול',      icon: '🏢' },

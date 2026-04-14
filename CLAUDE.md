@@ -1,4 +1,4 @@
-# Personal Finance Dashboard (RiseUp Concept) - CLAUDE.md
+# Personal Finance Dashboard (Otzar / אוצר) - CLAUDE.md
 
 ## Project Vision
 A holistic financial "Command Center" for Dvir. Consolidates multi-source Israeli bank movements, credit cards, global real estate (Rishon LeZion & Cleveland), stock portfolios (VOO, IBIT), and long-term savings. 

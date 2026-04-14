@@ -16,8 +16,8 @@ interface CashflowTabProps {
 const fmt = (v: number) =>
   new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 0 }).format(v);
 
-const LS_GOAL = 'riseup_monthly_goal';
-const LS_CASH = 'riseup_cash_balance';
+const LS_GOAL = 'otzar_monthly_goal';
+const LS_CASH = 'otzar_cash_balance';
 
 // Category buckets
 const INCOME_CATS = new Set(['salary', 'rental_income', 'refund', 'transfer_in']);

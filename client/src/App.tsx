@@ -50,7 +50,7 @@ const EMPTY_PORTFOLIO: Portfolio = {
   netWorthILS: 0,
 };
 
-const LS_PORTFOLIO = 'riseup_portfolio_cache';
+const LS_PORTFOLIO = 'otzar_portfolio_cache';
 
 function loadCachedPortfolio(): Portfolio {
   try {
@@ -213,7 +213,7 @@ function App() {
       {/* Header */}
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-gray-900">🚀 RiseUp — מרכז הפיקוד הפיננסי</h1>
+          <h1 className="text-xl font-bold text-gray-900">🚀 Otzar — מרכז הפיקוד הפיננסי</h1>
           <p className="text-sm text-gray-500 mt-0.5">ניהול נכסים, תזרים והלוואות — הכל במקום אחד</p>
         </div>
         <div className="flex items-center gap-4">

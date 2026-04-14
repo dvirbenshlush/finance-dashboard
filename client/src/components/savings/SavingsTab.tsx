@@ -4,7 +4,7 @@ import type { Asset, Portfolio } from '../../types';
 const fILS = (v: number) =>
   new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 0 }).format(v);
 
-const LS_SAVINGS_SETTINGS = 'riseup_savings_settings';
+const LS_SAVINGS_SETTINGS = 'otzar_savings_settings';
 
 interface SavingsSettings {
   returnRate: number;       // % expected annual return

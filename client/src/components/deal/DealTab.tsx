@@ -54,7 +54,7 @@ interface ExtraExpense {
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const LS_DEAL = 'riseup_deal_calc';
+const LS_DEAL = 'otzar_deal_calc';
 
 const DEFAULT: DealInputs = {
   purchasePrice: 1_500_000,

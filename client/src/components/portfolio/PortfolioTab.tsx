@@ -181,9 +181,9 @@ function aggregateTotals(all: Position[]) {
 // entered by the user. They are fed directly into computePositions so position
 // math (WAVG cost basis, realized P&L) works the same as for uploaded transactions.
 
-const LS_MANUAL_TXS = 'riseup_manual_txs';
+const LS_MANUAL_TXS = 'otzar_manual_txs';
 /** Legacy key — kept only for one-time migration on first load. */
-const LS_MANUAL_LEGACY = 'riseup_manual_positions';
+const LS_MANUAL_LEGACY = 'otzar_manual_positions';
 
 interface LegacyManualPosition {
   id: string; symbol: string; name?: string;
@@ -319,9 +319,9 @@ const PortfolioTab: FC = () => {
   // Per-field overrides — user can correct any editable column for any position
   type OverrideField = 'quantityHeld' | 'avgCostPerShare' | 'realizedPnL' | 'dividends';
   type PositionOverrides = Partial<Record<OverrideField, number>>;
-  const LS_OVERRIDES = 'riseup_position_overrides';
+  const LS_OVERRIDES = 'otzar_position_overrides';
   const [positionOverrides, setPositionOverrides] = useState<Record<string, PositionOverrides>>(
-    () => { try { return JSON.parse(localStorage.getItem('riseup_position_overrides') ?? '{}'); } catch { return {}; } }
+    () => { try { return JSON.parse(localStorage.getItem('otzar_position_overrides') ?? '{}'); } catch { return {}; } }
   );
   const [editingCell, setEditingCell] = useState<{ symbol: string; field: OverrideField; value: string } | null>(null);
 
