@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import TabNav, { type TabId } from './components/layout/TabNav';
 import CashflowTab from './components/cashflow/CashflowTab';
 import PortfolioTab from './components/portfolio/PortfolioTab';
@@ -101,9 +101,18 @@ function App() {
     return { monthSavings, monthIncome, monthExpenses, weekExpenses, avgWeek, weekDiff };
   }, [transactions]);
 
+  // Prevents concurrent categorization calls (React StrictMode double-invocation in dev)
+  const categorizingRef = useRef(false);
+
   /** Shared categorization runner — used on upload, DB load, and manual trigger */
   const runCategorize = useCallback(async (toTag: Transaction[]) => {
     if (toTag.length === 0) return;
+    // Guard: if a categorization is already in flight, skip this call
+    if (categorizingRef.current) {
+      console.log('[AI] Already categorizing, skipping duplicate call for', toTag.length, 'txs');
+      return;
+    }
+    categorizingRef.current = true;
     console.log('[AI] Starting categorization for', toTag.length, 'transactions');
     setCategorizing(true);
     setCategorizeError(null);
@@ -125,6 +134,7 @@ function App() {
       console.error('[AI] Error:', e);
       setCategorizeError(e instanceof Error ? e.message : String(e));
     } finally {
+      categorizingRef.current = false;
       setCategorizing(false);
     }
   }, []);
@@ -174,8 +184,8 @@ function App() {
     if (fresh.length > 0 && dbStatus === 'ready') {
       api.saveTransactions(fresh).catch(() => {});
     }
-    // Categorize fresh transactions
-    if (incoming.length > 0) await runCategorize(incoming);
+    // Categorize only the newly added transactions (not already-stored ones)
+    if (fresh.length > 0) await runCategorize(fresh);
   }, [runCategorize, dbStatus]);
 
   /** Manual re-categorize — sends everything without a real category to AI */

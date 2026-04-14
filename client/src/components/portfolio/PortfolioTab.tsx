@@ -1057,7 +1057,7 @@ const PortfolioTab: FC = () => {
                                         <th className="text-right pb-1 pr-3">סכום $</th>
                                         <th className="text-right pb-1 pr-3">שע"ח ₪/$</th>
                                         <th className="text-right pb-1 pr-3">סכום ₪</th>
-                                        {isManualSymbol && <th className="pb-1"></th>}
+                                        <th className="pb-1"></th>
                                       </tr>
                                     </thead>
                                     <tbody className="divide-y divide-gray-100">
@@ -1139,24 +1139,22 @@ const PortfolioTab: FC = () => {
                                             <td className={`py-1.5 pr-3 tabular-nums font-medium ${tx.action === 'buy' ? 'text-blue-600' : tx.action === 'sell' ? 'text-green-600' : 'text-gray-600'}`}>
                                               {amtILS != null ? `${tx.action === 'buy' ? '-' : tx.action === 'sell' ? '+' : ''}${fmtILS(amtILS)}` : '—'}
                                             </td>
-                                            {isManualSymbol && (
-                                              <td className="py-1.5 text-left">
-                                                {isMTx && (
-                                                  <span className="flex gap-1 opacity-0 group-hover:opacity-100 hover:opacity-100">
-                                                    <button onClick={() => { setEditingManualTxId(tx.id); setEditingManualTxDraft({}); }}
-                                                      className="text-blue-400 hover:text-blue-600 text-xs" title="ערוך">✏️</button>
-                                                    <button onClick={() => deleteManualTx(tx.id)}
-                                                      className="text-gray-300 hover:text-red-500 text-xs" title="מחק">🗑</button>
-                                                  </span>
-                                                )}
-                                              </td>
-                                            )}
+                                            <td className="py-1.5 text-left">
+                                              {isMTx && (
+                                                <span className="flex gap-1 opacity-0 group-hover:opacity-100 hover:opacity-100">
+                                                  <button onClick={() => { setEditingManualTxId(tx.id); setEditingManualTxDraft({}); }}
+                                                    className="text-blue-400 hover:text-blue-600 text-xs" title="ערוך">✏️</button>
+                                                  <button onClick={() => deleteManualTx(tx.id)}
+                                                    className="text-gray-300 hover:text-red-500 text-xs" title="מחק">🗑</button>
+                                                </span>
+                                              )}
+                                            </td>
                                           </tr>
                                         );
                                       })}
 
                                       {/* ── Add new history row form ── */}
-                                      {isManualSymbol && addingHistoryFor === p.symbol && (
+                                      {addingHistoryFor === p.symbol && (
                                         <tr className="bg-green-50 border-t border-green-200">
                                           <td className="py-1.5 pr-2">
                                             <input type="date" value={historyForm.date}
@@ -1190,7 +1188,7 @@ const PortfolioTab: FC = () => {
                                           <td className="py-1.5 pr-2 text-xs text-gray-400 italic tabular-nums">
                                             {historyForm.qty && historyForm.price ? fmt(parseFloat(historyForm.qty) * parseFloat(historyForm.price)) : '—'}
                                           </td>
-                                          <td colSpan={isManualSymbol ? 3 : 2} className="py-1.5">
+                                          <td colSpan={3} className="py-1.5">
                                             <div className="flex gap-1">
                                               <button onClick={() => addHistoryTx(p.symbol)}
                                                 className="text-xs px-2 py-0.5 bg-green-500 text-white rounded hover:bg-green-600">הוסף</button>
@@ -1205,13 +1203,13 @@ const PortfolioTab: FC = () => {
                                 )
                               }
 
-                              {/* Add row button for manual symbols */}
-                              {isManualSymbol && addingHistoryFor !== p.symbol && (
+                              {/* Add row button — available for all positions */}
+                              {addingHistoryFor !== p.symbol && (
                                 <button
                                   onClick={() => { setAddingHistoryFor(p.symbol); setHistoryForm({ date: '', action: 'buy', qty: '', price: '' }); }}
                                   className="text-xs text-green-600 hover:text-green-800 font-medium mb-3 flex items-center gap-1"
                                 >
-                                  ➕ הוסף פעולה
+                                  ➕ הוסף פעולה ידנית
                                 </button>
                               )}
 

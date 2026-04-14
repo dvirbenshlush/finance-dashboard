@@ -1,5 +1,5 @@
 import { type FC, useState, useMemo, type ReactNode } from 'react';
-import type { Portfolio } from '../../types';
+import type { Portfolio, MortgageTrack } from '../../types';
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 const fILS = (v: number) =>
@@ -42,6 +42,9 @@ interface DealInputs {
   includePurchaseTax: boolean;
   includeCapitalGains: boolean;
   showEquityCalc: boolean;
+
+  // Mortgage mix
+  mortgageTracks: MortgageTrack[];
 }
 
 interface ExtraExpense {
@@ -77,6 +80,7 @@ const DEFAULT: DealInputs = {
   includePurchaseTax: false,
   includeCapitalGains: true,
   showEquityCalc: true,
+  mortgageTracks: [],
 };
 
 function loadDeal(): DealInputs {
@@ -195,13 +199,14 @@ const KPI: FC<{ label: string; value: string; sub?: string; color?: string; bg?:
   </div>
 );
 
-type SubTab = 'basic' | 'profit' | 'cashflow' | 'amortization';
+type SubTab = 'basic' | 'profit' | 'cashflow' | 'amortization' | 'mortgage_mix';
 
 const SUB_TABS: { id: SubTab; label: string; icon: string }[] = [
-  { id: 'basic',        label: 'מידע בסיסי',   icon: '📋' },
-  { id: 'profit',       label: 'רווח עסקה',    icon: '💰' },
-  { id: 'cashflow',     label: 'תזרים',         icon: '📊' },
-  { id: 'amortization', label: 'לוח סילוקין',  icon: '🏦' },
+  { id: 'basic',        label: 'מידע בסיסי',    icon: '📋' },
+  { id: 'profit',       label: 'רווח עסקה',     icon: '💰' },
+  { id: 'cashflow',     label: 'תזרים',          icon: '📊' },
+  { id: 'amortization', label: 'לוח סילוקין',   icon: '🏦' },
+  { id: 'mortgage_mix', label: 'תמהיל משכנתא',  icon: '🏗️' },
 ];
 
 const AMOR_PAGE = 24;
@@ -225,10 +230,20 @@ const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange }) => {
   const [d, setDRaw]    = useState<DealInputs>(loadDeal);
   const [sub, setSub]   = useState<SubTab>('basic');
   const [page, setPage] = useState(0);
-  const [dealName, setDealName]       = useState('');
-  const [saveMsg, setSaveMsg]         = useState<string | null>(null);
-  const [newExpLabel, setNewExpLabel] = useState('');
-  const [newExpAmt, setNewExpAmt]     = useState('');
+  const [dealName, setDealName]           = useState('');
+  const [saveMsg, setSaveMsg]             = useState<string | null>(null);
+  const [newExpLabel, setNewExpLabel]     = useState('');
+  const [newExpAmt, setNewExpAmt]         = useState('');
+  const [cashflowExpanded, setCashflowExpanded] = useState(false);
+
+  // Mortgage track editing
+  const [addingTrack,    setAddingTrack]    = useState(false);
+  const [editingTrackId, setEditingTrackId] = useState<string | null>(null);
+  const [trackDraft, setTrackDraft] = useState<{
+    name: string; trackType: MortgageTrack['trackType'];
+    principal: string; outstanding: string;
+    interestRate: string; monthsTotal: string; monthlyPayment: string;
+  }>({ name: '', trackType: 'fixed', principal: '', outstanding: '', interestRate: '', monthsTotal: '', monthlyPayment: '' });
 
   const set = (patch: Partial<DealInputs>) => {
     setDRaw(prev => {
@@ -251,8 +266,9 @@ const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange }) => {
 
   const saveToPortfolio = () => {
     const name = dealName.trim() || `נכס ${fILS(d.purchasePrice)}`;
+    const assetId = `deal-asset-${Date.now()}`;
     const newAsset = {
-      id: Date.now().toString(),
+      id: assetId,
       name,
       type: 'real_estate' as const,
       value: d.purchasePrice,
@@ -261,36 +277,41 @@ const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange }) => {
       monthlyRentalIncome: d.monthlyRent,
     };
     const loanAmount = Math.max(0, d.purchasePrice - d.equity);
+    const newLoan = loanAmount > 0 ? {
+      id: `deal-loan-${Date.now() + 1}`,
+      name: `משכנתא — ${name}`,
+      type: 'mortgage' as const,
+      principal: loanAmount,
+      outstanding: d.mortgageTracks.length > 0
+        ? d.mortgageTracks.reduce((s, t) => s + t.outstanding, 0)
+        : loanAmount,
+      interestRate: d.interestRate,
+      currency: 'ILS' as const,
+      monthlyPayment: c.monthly,
+      linkedAssetId: assetId,
+      termMonths: d.loanTermYears * 12,
+      ...(d.mortgageTracks.length > 0 ? { tracks: d.mortgageTracks } : {}),
+    } : null;
     const newPortfolio: Portfolio = {
       ...portfolio,
       assets: [...portfolio.assets, newAsset],
-      ...(loanAmount > 0 ? {
-        loans: [...portfolio.loans, {
-          id: (Date.now() + 1).toString(),
-          name: `משכנתא — ${name}`,
-          type: 'mortgage' as const,
-          principal: loanAmount,
-          outstanding: loanAmount,
-          interestRate: d.interestRate,
-          currency: 'ILS' as const,
-          monthlyPayment: c.monthly,
-          linkedAssetId: Date.now().toString(),
-          termMonths: d.loanTermYears * 12,
-        }],
-      } : {}),
+      loans: newLoan ? [...portfolio.loans, newLoan] : portfolio.loans,
       totalAssetsILS: portfolio.totalAssetsILS + d.purchasePrice,
       totalLiabilitiesILS: portfolio.totalLiabilitiesILS + loanAmount,
       netWorthILS: portfolio.netWorthILS + d.purchasePrice - loanAmount,
     };
     onPortfolioChange(newPortfolio);
-    setSaveMsg(`✅ "${name}" נוסף לתיק הנכסים`);
+    setSaveMsg(`✅ "${name}" נוסף לתיק הנכסים${d.mortgageTracks.length > 0 ? ` (${d.mortgageTracks.length} מסלולים)` : ''}`);
     setTimeout(() => setSaveMsg(null), 4000);
   };
 
   // ── Calculations ────────────────────────────────────────────────────────────
   const c = useMemo(() => {
     const loanAmount  = Math.max(0, d.purchasePrice - d.equity);
-    const monthly     = loanAmount > 0 ? pmt(loanAmount, d.interestRate, d.loanTermYears) : 0;
+    const tracksTotalMonthly = d.mortgageTracks.reduce((s, t) => s + t.monthlyPayment, 0);
+    const monthly = loanAmount > 0
+      ? (d.mortgageTracks.length > 0 && tracksTotalMonthly > 0 ? tracksTotalMonthly : pmt(loanAmount, d.interestRate, d.loanTermYears))
+      : 0;
     const totalPmts   = monthly * d.loanTermYears * 12;
     const totalInterest = totalPmts - loanAmount;
 
@@ -783,19 +804,44 @@ const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange }) => {
                     </tr>
 
                     <GroupRow icon="📤" label="הוצאות שוטפות" />
-                    {[
-                      { label: 'החזר משכנתא (קרן + ריבית)', m: c.monthly },
-                      { label: 'ביטוח מבנה',                 m: d.buildingInsuranceAnnual / 12 },
-                      { label: 'ביטוח חיים',                 m: d.lifeInsuranceMonthly },
-                      { label: 'תחזוקה ותיקונים',            m: d.maintenanceCostAnnual / 12 },
-                      ...d.extraExpenses.map(e => ({ label: e.label, m: e.amountMonthly })),
-                    ].filter(r => r.m > 0).map((r, i) => (
-                      <tr key={i} className="hover:bg-gray-50">
-                        <td className="px-4 py-2 text-gray-700 pr-8">{r.label}</td>
-                        <td className="px-4 py-2 text-right text-red-500 tabular-nums">-{fILS(r.m)}</td>
-                        <td className="px-4 py-2 text-right text-red-500 tabular-nums">-{fILS(r.m * 12)}</td>
-                      </tr>
-                    ))}
+                    {(() => {
+                      const rows = [
+                        { label: 'החזר משכנתא (קרן + ריבית)', m: c.monthly },
+                        { label: 'ביטוח מבנה',                 m: d.buildingInsuranceAnnual / 12 },
+                        { label: 'ביטוח חיים',                 m: d.lifeInsuranceMonthly },
+                        { label: 'תחזוקה ותיקונים',            m: d.maintenanceCostAnnual / 12 },
+                        ...d.extraExpenses.map(e => ({ label: e.label, m: e.amountMonthly })),
+                      ].filter(r => r.m > 0);
+                      const LIMIT = 10;
+                      const visible = cashflowExpanded ? rows : rows.slice(0, LIMIT);
+                      const hidden  = rows.length - LIMIT;
+                      return (
+                        <>
+                          {visible.map((r, i) => (
+                            <tr key={i} className="hover:bg-gray-50">
+                              <td className="px-4 py-2 text-gray-700 pr-8">{r.label}</td>
+                              <td className="px-4 py-2 text-right text-red-500 tabular-nums">-{fILS(r.m)}</td>
+                              <td className="px-4 py-2 text-right text-red-500 tabular-nums">-{fILS(r.m * 12)}</td>
+                            </tr>
+                          ))}
+                          {rows.length > LIMIT && (
+                            <tr>
+                              <td colSpan={3} className="px-4 py-1.5">
+                                <button
+                                  onClick={() => setCashflowExpanded(v => !v)}
+                                  className="flex items-center gap-1.5 text-xs text-blue-500 hover:text-blue-700 transition-colors"
+                                >
+                                  <span className={`transition-transform duration-150 ${cashflowExpanded ? 'rotate-180' : ''}`}>▾</span>
+                                  {cashflowExpanded
+                                    ? 'הסתר הוצאות'
+                                    : `הצג עוד ${hidden} הוצאות`}
+                                </button>
+                              </td>
+                            </tr>
+                          )}
+                        </>
+                      );
+                    })()}
 
                     <tr className={`font-bold border-t-2 ${c.annualCashflow >= 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
                       <td className={`px-4 py-3 text-base ${c.annualCashflow >= 0 ? 'text-green-800' : 'text-red-700'}`}>
@@ -924,6 +970,241 @@ const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange }) => {
             </div>
           )}
 
+          {/* ══ תמהיל משכנתא ══ */}
+          {sub === 'mortgage_mix' && (
+            <div className="space-y-5">
+
+              {/* Summary KPIs */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <KPI label="קרן הלוואה הכוללת" value={fILS(c.loanAmount)} bg="bg-blue-50" color="text-blue-800" />
+                <KPI label="תשלום PMT (מסלול יחיד)"
+                  value={fILS(pmt(c.loanAmount, d.interestRate, d.loanTermYears))}
+                  sub={`${d.interestRate}% · ${d.loanTermYears} שנה`}
+                  bg="bg-gray-50" color="text-gray-700" />
+                {d.mortgageTracks.length > 0 && (
+                  <>
+                    <KPI label={'תשלום ע"פ תמהיל'}
+                      value={fILS(d.mortgageTracks.reduce((s, t) => s + t.monthlyPayment, 0))}
+                      sub={`${d.mortgageTracks.length} מסלולים`}
+                      bg="bg-indigo-50" color="text-indigo-800" />
+                    <KPI label={'יתרה כוללת (ע"פ תמהיל)'}
+                      value={fILS(d.mortgageTracks.reduce((s, t) => s + t.outstanding, 0))}
+                      bg="bg-orange-50" color="text-orange-700" />
+                  </>
+                )}
+              </div>
+
+              {d.mortgageTracks.length > 0 && (
+                <p className="text-xs text-indigo-600 bg-indigo-50 rounded-lg px-3 py-2">
+                  ✅ התזרים וחישובי הרווח משתמשים בתשלום מהתמהיל ({fILS(d.mortgageTracks.reduce((s, t) => s + t.monthlyPayment, 0))}/חודש) במקום ה-PMT הנ"ל.
+                </p>
+              )}
+
+              {/* Tracks table */}
+              {d.mortgageTracks.length > 0 && (
+                <div className="rounded-xl border border-gray-200 overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        {['מסלול', 'קרן (₪)', 'יתרה (₪)', 'ריבית', 'החזר/חודש', 'חודשים נותרים', ''].map(h => (
+                          <th key={h} className="text-right px-3 py-2.5 font-semibold text-gray-600 text-xs">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {d.mortgageTracks.map(track => {
+                        const isEditing = editingTrackId === track.id;
+                        if (isEditing) return (
+                          <tr key={track.id} className="bg-yellow-50">
+                            <td colSpan={7} className="px-3 py-3">
+                              <TrackForm
+                                draft={trackDraft}
+                                onChange={setTrackDraft}
+                                onSave={() => {
+                                  const principal  = parseFloat(trackDraft.principal)  || track.principal;
+                                  const interestRate = parseFloat(trackDraft.interestRate) || track.interestRate;
+                                  const monthsTotal  = parseInt(trackDraft.monthsTotal)  || track.monthsTotal;
+                                  const outstanding  = parseFloat(trackDraft.outstanding) || track.outstanding;
+                                  const autoPayment  = monthsTotal > 0
+                                    ? pmt(principal, interestRate, monthsTotal / 12)
+                                    : 0;
+                                  const monthlyPayment = parseFloat(trackDraft.monthlyPayment) || autoPayment;
+                                  const updated: MortgageTrack = {
+                                    ...track,
+                                    name:      trackDraft.name || track.name,
+                                    trackType: trackDraft.trackType,
+                                    principal, outstanding, interestRate, monthsTotal,
+                                    monthlyPayment,
+                                    monthsRemaining: monthsTotal,
+                                  };
+                                  set({ mortgageTracks: d.mortgageTracks.map(t => t.id === track.id ? updated : t) });
+                                  setEditingTrackId(null);
+                                }}
+                                onCancel={() => setEditingTrackId(null)}
+                              />
+                            </td>
+                          </tr>
+                        );
+                        return (
+                          <tr key={track.id} className="hover:bg-gray-50">
+                            <td className="px-3 py-2">
+                              <div className="flex items-center gap-1.5">
+                                <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${TRACK_TYPE_COLORS[track.trackType]}`}>
+                                  {TRACK_TYPE_LABELS[track.trackType]}
+                                </span>
+                                {track.name && track.name !== TRACK_TYPE_LABELS[track.trackType] && (
+                                  <span className="text-xs text-gray-500">{track.name}</span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-gray-700">{fILS(track.principal)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-orange-600">{fILS(track.outstanding)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-gray-600">{track.interestRate.toFixed(2)}%</td>
+                            <td className="px-3 py-2 text-right tabular-nums font-semibold text-red-500">{fILS(track.monthlyPayment)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-gray-500">{track.monthsRemaining}</td>
+                            <td className="px-3 py-2">
+                              <div className="flex items-center gap-1.5 justify-end">
+                                <button
+                                  onClick={() => {
+                                    setTrackDraft({
+                                      name: track.name,
+                                      trackType: track.trackType,
+                                      principal: String(track.principal),
+                                      outstanding: String(track.outstanding),
+                                      interestRate: String(track.interestRate),
+                                      monthsTotal: String(track.monthsTotal),
+                                      monthlyPayment: String(track.monthlyPayment),
+                                    });
+                                    setEditingTrackId(track.id);
+                                    setAddingTrack(false);
+                                  }}
+                                  className="text-xs text-blue-500 hover:text-blue-700 px-1.5 py-0.5 rounded hover:bg-blue-50"
+                                >
+                                  עריכה
+                                </button>
+                                <button
+                                  onClick={() => set({ mortgageTracks: d.mortgageTracks.filter(t => t.id !== track.id) })}
+                                  className="text-xs text-red-400 hover:text-red-600 px-1.5 py-0.5 rounded hover:bg-red-50"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot className="bg-gray-50 border-t-2 border-gray-200 font-semibold text-sm">
+                      <tr>
+                        <td className="px-3 py-2 text-gray-600">סה"כ</td>
+                        <td className="px-3 py-2 text-right text-blue-700">{fILS(d.mortgageTracks.reduce((s, t) => s + t.principal, 0))}</td>
+                        <td className="px-3 py-2 text-right text-orange-600">{fILS(d.mortgageTracks.reduce((s, t) => s + t.outstanding, 0))}</td>
+                        <td className="px-3 py-2 text-right text-gray-500">
+                          {d.mortgageTracks.length > 0
+                            ? `${(d.mortgageTracks.reduce((s, t) => s + t.interestRate * t.principal, 0) / d.mortgageTracks.reduce((s, t) => s + t.principal, 0)).toFixed(2)}% ממוצע`
+                            : '—'}
+                        </td>
+                        <td className="px-3 py-2 text-right text-red-600">{fILS(d.mortgageTracks.reduce((s, t) => s + t.monthlyPayment, 0))}</td>
+                        <td colSpan={2} />
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
+
+              {/* Add track form */}
+              {addingTrack && (
+                <TrackForm
+                  draft={trackDraft}
+                  onChange={setTrackDraft}
+                  onSave={() => {
+                    const principal    = parseFloat(trackDraft.principal)    || 0;
+                    const interestRate = parseFloat(trackDraft.interestRate) || 0;
+                    const monthsTotal  = parseInt(trackDraft.monthsTotal)    || 0;
+                    const outstanding  = parseFloat(trackDraft.outstanding)  || principal;
+                    const autoPayment  = monthsTotal > 0 && principal > 0
+                      ? pmt(principal, interestRate, monthsTotal / 12)
+                      : 0;
+                    const monthlyPayment = parseFloat(trackDraft.monthlyPayment) || autoPayment;
+                    const ttype = trackDraft.trackType;
+                    const newTrack: MortgageTrack = {
+                      id:              `trk-${Date.now()}`,
+                      name:            trackDraft.name || TRACK_TYPE_LABELS[ttype],
+                      trackType:       ttype,
+                      principal, outstanding, interestRate,
+                      monthlyPayment,
+                      monthsTotal,
+                      monthsRemaining: monthsTotal,
+                    };
+                    set({ mortgageTracks: [...d.mortgageTracks, newTrack] });
+                    setAddingTrack(false);
+                    setTrackDraft({ name: '', trackType: 'fixed', principal: '', outstanding: '', interestRate: '', monthsTotal: '', monthlyPayment: '' });
+                  }}
+                  onCancel={() => {
+                    setAddingTrack(false);
+                    setTrackDraft({ name: '', trackType: 'fixed', principal: '', outstanding: '', interestRate: '', monthsTotal: '', monthlyPayment: '' });
+                  }}
+                />
+              )}
+
+              {!addingTrack && editingTrackId === null && (
+                <button
+                  onClick={() => {
+                    setAddingTrack(true);
+                    setEditingTrackId(null);
+                  }}
+                  className="flex items-center gap-2 px-4 py-2.5 border-2 border-dashed border-gray-300 rounded-xl text-sm text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors w-full justify-center"
+                >
+                  + הוסף מסלול משכנתא
+                </button>
+              )}
+
+              {d.mortgageTracks.length === 0 && !addingTrack && (
+                <p className="text-xs text-gray-400 text-center py-2">
+                  לחץ "+ הוסף מסלול" להגדרת תמהיל המשכנתא. כל עוד אין מסלולים, מחשבים לפי PMT יחיד.
+                </p>
+              )}
+
+              {/* Distribute helper */}
+              {d.mortgageTracks.length === 0 && c.loanAmount > 0 && !addingTrack && (
+                <div className="bg-blue-50 rounded-xl px-4 py-3 text-xs text-blue-700">
+                  <p className="font-semibold mb-1">💡 טיפ: תמהיל מקובל בישראל</p>
+                  <p>לדוגמה: 30% פריים + 30% קל"צ + 40% קבוע</p>
+                  <div className="flex gap-2 mt-2 flex-wrap">
+                    {([
+                      { type: 'prime' as const,    pct: 30, rate: 3.5, months: 300 },
+                      { type: 'cpi' as const,      pct: 30, rate: 3.0, months: 300 },
+                      { type: 'fixed' as const,    pct: 40, rate: 5.0, months: 300 },
+                    ]).map(t => {
+                      const p = Math.round(c.loanAmount * t.pct / 100 / 10000) * 10000;
+                      const mp = pmt(p, t.rate, t.months / 12);
+                      return (
+                        <button
+                          key={t.type}
+                          onClick={() => set({
+                            mortgageTracks: [...d.mortgageTracks, {
+                              id: `trk-${Date.now()}-${t.type}`,
+                              name: TRACK_TYPE_LABELS[t.type],
+                              trackType: t.type,
+                              principal: p, outstanding: p,
+                              interestRate: t.rate,
+                              monthlyPayment: mp,
+                              monthsTotal: t.months,
+                              monthsRemaining: t.months,
+                            }],
+                          })}
+                          className="px-2 py-1 bg-blue-100 hover:bg-blue-200 rounded-lg font-medium transition-colors"
+                        >
+                          + {TRACK_TYPE_LABELS[t.type]} {t.pct}% ({fILS(p)})
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
         </div>
       </div>
 
@@ -957,6 +1238,118 @@ const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange }) => {
         </p>
       </div>
 
+    </div>
+  );
+};
+
+// ── Track type helpers ────────────────────────────────────────────────────────
+const TRACK_TYPE_LABELS: Record<MortgageTrack['trackType'], string> = {
+  prime: 'פריים', fixed: 'קבוע', cpi: 'קל"צ', variable: 'משתנה', other: 'אחר',
+};
+
+const TRACK_TYPE_COLORS: Record<MortgageTrack['trackType'], string> = {
+  prime:    'bg-blue-100 text-blue-700',
+  fixed:    'bg-green-100 text-green-700',
+  cpi:      'bg-orange-100 text-orange-700',
+  variable: 'bg-purple-100 text-purple-700',
+  other:    'bg-gray-100 text-gray-700',
+};
+
+interface TrackDraft {
+  name: string; trackType: MortgageTrack['trackType'];
+  principal: string; outstanding: string;
+  interestRate: string; monthsTotal: string; monthlyPayment: string;
+}
+
+const TrackForm: FC<{
+  draft: TrackDraft;
+  onChange: (d: TrackDraft) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}> = ({ draft, onChange, onSave, onCancel }) => {
+  // Auto-compute monthly payment when principal/rate/months change
+  const autoPayment = (() => {
+    const p = parseFloat(draft.principal) || 0;
+    const r = parseFloat(draft.interestRate) || 0;
+    const m = parseInt(draft.monthsTotal) || 0;
+    if (p > 0 && r > 0 && m > 0) {
+      const mr = r / 100 / 12;
+      return p * mr * Math.pow(1 + mr, m) / (Math.pow(1 + mr, m) - 1);
+    }
+    return 0;
+  })();
+
+  return (
+    <div className="border border-blue-200 rounded-xl p-4 bg-blue-50/30 space-y-3">
+      <p className="text-xs font-semibold text-blue-700">הוספת / עריכת מסלול</p>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">סוג מסלול</label>
+          <select
+            value={draft.trackType}
+            onChange={e => onChange({ ...draft, trackType: e.target.value as MortgageTrack['trackType'] })}
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+          >
+            {(Object.keys(TRACK_TYPE_LABELS) as MortgageTrack['trackType'][]).map(t => (
+              <option key={t} value={t}>{TRACK_TYPE_LABELS[t]}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">שם (אופציונלי)</label>
+          <input type="text" value={draft.name} onChange={e => onChange({ ...draft, name: e.target.value })}
+            placeholder={TRACK_TYPE_LABELS[draft.trackType]}
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">קרן (₪)</label>
+          <input type="number" step="10000" value={draft.principal} onChange={e => onChange({ ...draft, principal: e.target.value })}
+            placeholder="0"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">יתרה נוכחית (₪)</label>
+          <input type="number" step="10000" value={draft.outstanding} onChange={e => onChange({ ...draft, outstanding: e.target.value })}
+            placeholder="= קרן"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">ריבית שנתית (%)</label>
+          <input type="number" step="0.1" value={draft.interestRate} onChange={e => onChange({ ...draft, interestRate: e.target.value })}
+            placeholder="4.5"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">מספר חודשים</label>
+          <input type="number" step="12" value={draft.monthsTotal} onChange={e => onChange({ ...draft, monthsTotal: e.target.value })}
+            placeholder="300"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">
+            תשלום חודשי (₪)
+            {autoPayment > 0 && (
+              <button onClick={() => onChange({ ...draft, monthlyPayment: autoPayment.toFixed(0) })}
+                className="mr-1 text-blue-500 hover:text-blue-700 text-xs underline">
+                מחשב: {new Intl.NumberFormat('he-IL', { maximumFractionDigits: 0 }).format(autoPayment)}
+              </button>
+            )}
+          </label>
+          <input type="number" step="100" value={draft.monthlyPayment} onChange={e => onChange({ ...draft, monthlyPayment: e.target.value })}
+            placeholder={autoPayment > 0 ? autoPayment.toFixed(0) : '0'}
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <button onClick={onSave}
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors">
+          שמור מסלול
+        </button>
+        <button onClick={onCancel}
+          className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm font-medium hover:bg-gray-200 transition-colors">
+          ביטול
+        </button>
+      </div>
     </div>
   );
 };

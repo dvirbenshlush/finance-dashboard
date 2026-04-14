@@ -57,17 +57,22 @@ const fmt = (v: number) =>
 const ALL_CATS = Object.keys(CATEGORY_LABELS) as TransactionCategory[];
 
 // ---- Category group card ----
+const TX_LIMIT = 10;
+
 const GroupCard: FC<{
   categoryKey: string;
   txs: Transaction[];
   onCategoryUpdate: (id: string, cat: TransactionCategory) => void;
   isIncome: boolean;
 }> = ({ categoryKey, txs, onCategoryUpdate, isIncome }) => {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen]           = useState(false);
+  const [expanded, setExpanded]   = useState(false);
   const total = txs.reduce((s, t) => s + t.amount, 0);
   const color = CATEGORY_COLORS[categoryKey] ?? '#9ca3af';
   const label = CATEGORY_LABELS[categoryKey] ?? categoryKey;
-  const sorted = [...txs].sort((a, b) => b.amount - a.amount);
+  const sorted  = [...txs].sort((a, b) => b.amount - a.amount);
+  const visible = expanded ? sorted : sorted.slice(0, TX_LIMIT);
+  const hidden  = sorted.length - TX_LIMIT;
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -86,7 +91,7 @@ const GroupCard: FC<{
 
       {open && (
         <div className="border-t border-gray-100 divide-y divide-gray-50">
-          {sorted.map((tx) => (
+          {visible.map((tx) => (
             <div key={tx.id} className="flex items-center gap-2 px-5 py-2.5 hover:bg-gray-50">
               <span className="text-xs text-gray-400 w-24 shrink-0">{tx.date}</span>
               <span className={`text-xs px-1.5 py-0.5 rounded shrink-0 ${
@@ -111,6 +116,17 @@ const GroupCard: FC<{
               </select>
             </div>
           ))}
+          {sorted.length > TX_LIMIT && (
+            <div className="px-5 py-2">
+              <button
+                onClick={() => setExpanded(v => !v)}
+                className="flex items-center gap-1.5 text-xs text-blue-500 hover:text-blue-700 transition-colors"
+              >
+                <span className={`transition-transform duration-150 ${expanded ? 'rotate-180' : ''}`}>▾</span>
+                {expanded ? 'הסתר פעולות' : `הצג עוד ${hidden} פעולות`}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

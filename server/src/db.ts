@@ -75,6 +75,14 @@ export async function initDb(): Promise<void> {
       data TEXT     NOT NULL,
       CONSTRAINT single_row CHECK (id = 1)
     );
+
+    CREATE TABLE IF NOT EXISTS category_cache (
+      description_key TEXT        PRIMARY KEY,
+      category        TEXT        NOT NULL,
+      confidence      TEXT        NOT NULL DEFAULT 'high',
+      hit_count       INTEGER     NOT NULL DEFAULT 1,
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
   `);
   console.log('[DB] Tables ready');
 }

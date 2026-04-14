@@ -227,6 +227,19 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange }) => {
   // ── Asset helpers ──────────────────────────────────────────────────────────
   const NUM_FIELDS: (keyof Asset)[] = ['value','units','pricePerUnit','avgBuyPrice','purchasePrice','monthlyRentalIncome'];
 
+  const removeAsset = (id: string) => {
+    const nextAssets = assets.filter(a => a.id !== id);
+    const nextLoans  = portfolio.loans.filter(l => l.linkedAssetId !== id);
+    const totalAssetsILS      = nextAssets.reduce((s, a) => s + toILS(a), 0);
+    const totalLiabilitiesILS = nextLoans.reduce((s, l) => s + loanToILS(l.outstanding, l.currency), 0);
+    setAssets(nextAssets);
+    onPortfolioChange({
+      ...portfolio, assets: nextAssets, loans: nextLoans,
+      totalAssetsILS, totalLiabilitiesILS,
+      netWorthILS: totalAssetsILS - totalLiabilitiesILS,
+    });
+  };
+
   const updateAsset = (id: string, field: keyof Asset, rawValue: string) => {
     setAssets(prev => {
       const next = prev.map(a => {
@@ -449,6 +462,13 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange }) => {
                     <span className={`text-xs font-bold px-2 py-1 rounded-lg ${fc.totalAnnualILS >= 0 ? 'bg-blue-50 text-blue-600' : 'bg-red-50 text-red-600'}`}>
                       {fc.totalAnnualILS >= 0 ? '+' : ''}{fILS(fc.totalAnnualILS)} / שנה
                     </span>
+                    <button
+                      onClick={() => removeAsset(asset.id)}
+                      title="הסר נכס"
+                      className="text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg px-2 py-1 transition-colors text-sm"
+                    >
+                      🗑️
+                    </button>
                   </div>
                 </div>
 

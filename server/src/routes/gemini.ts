@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { classifyBatch } from '../llm/command-classification';
 import { sanitizeDescriptions } from '../utils/sanitize';
+import * as catCache from '../utils/categoryCache';
 
 const router = Router();
 
@@ -66,13 +67,42 @@ router.post('/categorize', async (req: Request, res: Response) => {
 
   if (!transactions?.length) { res.json([]); return; }
 
-  console.log(`[Groq] Categorizing ${transactions.length} transactions via command-classification`);
+  // Ensure the DB-backed cache is loaded into memory (no-op after first call)
+  await catCache.ensureLoaded();
+
+  // ── Split: cache hits vs LLM needed ────────────────────────────────────────
+  const hits: { id: string; category: string }[] = [];
+  const misses: typeof transactions = [];
+
+  for (const tx of transactions) {
+    const cached = catCache.get(tx.description);
+    if (cached) {
+      hits.push({ id: tx.id, category: cached.category });
+    } else {
+      misses.push(tx);
+    }
+  }
+
+  console.log(
+    `[Groq] Categorize ${transactions.length} txs — ` +
+    `${hits.length} cache hits, ${misses.length} need LLM` +
+    ` (cache size: ${catCache.stats().size})`
+  );
+
+  if (misses.length === 0) {
+    res.json(hits);
+    return;
+  }
 
   try {
     // Strip PII from descriptions before sending to external LLM
     const sanitized = sanitizeDescriptions(
-      transactions.map(tx => ({ id: tx.id, description: tx.description, amount: tx.amount }))
+      misses.map(tx => ({ id: tx.id, description: tx.description, amount: tx.amount }))
     );
+
+    // id → sanitised description map for cache storage after LLM returns
+    const idToSanitisedDesc = new Map(sanitized.map(tx => [tx.id, tx.description]));
+
     const classified = await classifyBatch(
       apiKey,
       sanitized,
@@ -80,12 +110,24 @@ router.post('/categorize', async (req: Request, res: Response) => {
       (done, total) => console.log(`[Groq] ${done}/${total} classified`),
     );
 
-    const results = classified.map(r => ({ id: r.id, category: r.category }));
-    console.log(`[Groq] Returning ${results.length} results`);
-    res.json(results);
+    // Store results in cache (high/medium confidence only)
+    catCache.setBatch(classified.map(r => ({
+      description: idToSanitisedDesc.get(r.id) ?? r.description,
+      category:    r.category,
+      confidence:  r.confidence,
+    })));
+
+    const llmResults = classified.map(r => ({ id: r.id, category: r.category }));
+    console.log(`[Groq] LLM returned ${llmResults.length}, total with cache: ${hits.length + llmResults.length}`);
+    res.json([...hits, ...llmResults]);
   } catch (err) {
     console.error('[Groq] Classify error:', err);
-    res.status(500).json({ error: String(err) });
+    // Still return cache hits even if LLM failed
+    if (hits.length > 0) {
+      res.json(hits);
+    } else {
+      res.status(500).json({ error: String(err) });
+    }
   }
 });
 
