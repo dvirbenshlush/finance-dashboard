@@ -2,6 +2,7 @@ import { type FC, useRef, useState } from 'react';
 import type { BankSource, Transaction } from '../../types';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
+import { api } from '../../services/api';
 
 interface FileUploadProps {
   onTransactionsLoaded: (transactions: Transaction[]) => void;
@@ -18,23 +19,17 @@ const BANK_OPTIONS: { value: BankSource; label: string }[] = [
 /** Convert any date format → YYYY-MM-DD */
 const normalizeDate = (raw: unknown): string => {
   if (typeof raw === 'number') {
-    // Excel serial date
     const d = XLSX.SSF.parse_date_code(raw);
     return `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
   }
-  const s = String(raw ?? '').trim().replace(/\u200f/g, ''); // strip RTL marks
+  const s = String(raw ?? '').trim().replace(/\u200f/g, '');
   if (!s) return '';
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
-  // DD/MM/YYYY or DD.MM.YYYY
   const dmy = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})/);
   if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
-  // MM/DD/YYYY
-  const mdy = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})/);
-  if (mdy && parseInt(mdy[1]) > 12) return `${mdy[3]}-${mdy[1].padStart(2, '0')}-${mdy[2].padStart(2, '0')}`;
   return s;
 };
 
-/** Find a column value by trying multiple candidate names */
 const pickCol = (row: Record<string, unknown>, candidates: string[]): unknown => {
   const keys = Object.keys(row);
   for (const c of candidates) {
@@ -52,7 +47,6 @@ const pickCol = (row: Record<string, unknown>, candidates: string[]): unknown =>
   return undefined;
 };
 
-/** Parse a numeric string that may contain commas or currency symbols */
 const parseAmount = (raw: unknown): number => {
   const s = String(raw ?? '').replace(/[,\s₪$]/g, '').trim();
   return parseFloat(s) || 0;
@@ -76,8 +70,7 @@ const parseRows = (
         'תיאור', 'פרטים', 'שם בית עסק', 'שם בעסק', 'נושא', 'תיאור פעולה',
         'description', 'Description', 'narrative', 'Narrative', 'מוטב',
       ]);
-      // Some banks have separate debit/credit columns
-      const rawDebit = pickCol(row, ['חובה', 'הוצאה', 'חיוב', 'debit', 'Debit']);
+      const rawDebit  = pickCol(row, ['חובה', 'הוצאה', 'חיוב', 'debit', 'Debit']);
       const rawCredit = pickCol(row, ['זכות', 'הכנסה', 'זיכוי', 'credit', 'Credit']);
       const rawAmount = pickCol(row, [
         'סכום', 'סכום חיוב', 'סכום עסקה', 'סכום ב-₪', 'סכום בש"ח', 'סכום פעולה',
@@ -96,8 +89,6 @@ const parseRows = (
       } else {
         const raw = parseAmount(rawAmount ?? rawDebit ?? rawCredit ?? 0);
         amount = Math.abs(raw);
-        // Credit cards: positive = charge (debit)
-        // Bank accounts: negative = debit
         isDebit = isCreditCard ? raw > 0 : raw < 0;
       }
 
@@ -125,6 +116,8 @@ interface ParseResult {
   detectedColumns: string[];
   sampleRows: Transaction[];
   skippedBadDate: number;
+  source: 'xlsx' | 'csv' | 'pdf';
+  pageCount?: number;
 }
 
 const FileUpload: FC<FileUploadProps> = ({ onTransactionsLoaded }) => {
@@ -133,8 +126,10 @@ const FileUpload: FC<FileUploadProps> = ({ onTransactionsLoaded }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [result, setResult] = useState<ParseResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pdfLoading, setPdfLoading] = useState(false);
 
-  const parseFile = (file: File, fileIndex: number) => {
+  // ── XLSX / CSV parsing (client-side, unchanged) ──────────────────────────
+  const parseSpreadsheetFile = (file: File, fileIndex: number) => {
     const isCsv = file.name.toLowerCase().endsWith('.csv');
     const reader = new FileReader();
 
@@ -158,9 +153,7 @@ const FileUpload: FC<FileUploadProps> = ({ onTransactionsLoaded }) => {
           rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
         }
 
-        if (rows.length > 0) {
-          detectedColumns = Object.keys(rows[0]);
-        }
+        if (rows.length > 0) detectedColumns = Object.keys(rows[0]);
 
         const transactions = parseRows(rows, selectedBank, fileIndex);
         const skippedBadDate = transactions.filter((t) => !/^\d{4}-\d{2}-\d{2}/.test(t.date)).length;
@@ -170,6 +163,7 @@ const FileUpload: FC<FileUploadProps> = ({ onTransactionsLoaded }) => {
           detectedColumns,
           sampleRows: transactions.slice(0, 5),
           skippedBadDate,
+          source: isCsv ? 'csv' : 'xlsx',
         });
         setError(null);
         onTransactionsLoaded(transactions);
@@ -178,18 +172,71 @@ const FileUpload: FC<FileUploadProps> = ({ onTransactionsLoaded }) => {
       }
     };
 
-    if (isCsv) {
-      reader.readAsText(file, 'windows-1255');
-    } else {
-      reader.readAsBinaryString(file);
+    if (isCsv) reader.readAsText(file, 'windows-1255');
+    else reader.readAsBinaryString(file);
+  };
+
+  // ── PDF parsing (server-side via Groq AI) ────────────────────────────────
+  const parsePdfFile = async (file: File) => {
+    setPdfLoading(true);
+    setError(null);
+    setResult(null);
+
+    try {
+      // Read file as base64
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const dataUrl = e.target?.result as string;
+          // dataUrl is "data:application/pdf;base64,XXXX..."
+          resolve(dataUrl.split(',')[1] ?? '');
+        };
+        reader.onerror = () => reject(new Error('FileReader error'));
+        reader.readAsDataURL(file);
+      });
+
+      const response = await api.parsePdf(base64, selectedBank, file.type || 'application/pdf');
+      const { transactions, pageCount } = response;
+
+      if (transactions.length === 0) {
+        setError('ה-AI לא זיהה תנועות בקובץ — ייתכן שהפורמט אינו נתמך או שהמסמך סרוק כתמונה');
+        return;
+      }
+
+      const skippedBadDate = transactions.filter((t) => !/^\d{4}-\d{2}-\d{2}/.test(t.date)).length;
+
+      setResult({
+        transactions,
+        detectedColumns: [],
+        sampleRows: transactions.slice(0, 5),
+        skippedBadDate,
+        source: 'pdf',
+        pageCount,
+      });
+      onTransactionsLoaded(transactions);
+    } catch (err) {
+      setError(`שגיאת PDF: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setPdfLoading(false);
     }
   };
 
+  const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif']);
+
+  // ── File dispatcher ───────────────────────────────────────────────────────
   const handleFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setResult(null);
     setError(null);
-    Array.from(files).forEach((f, i) => parseFile(f, i));
+
+    Array.from(files).forEach((f, i) => {
+      const ext = f.name.toLowerCase().split('.').pop() ?? '';
+      if (ext === 'pdf' || IMAGE_EXTS.has(ext)) {
+        parsePdfFile(f);
+      } else {
+        parseSpreadsheetFile(f, i);
+      }
+    });
   };
 
   return (
@@ -210,46 +257,74 @@ const FileUpload: FC<FileUploadProps> = ({ onTransactionsLoaded }) => {
       <div
         className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${
           isDragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-blue-400 hover:bg-gray-50'
-        }`}
+        } ${pdfLoading ? 'pointer-events-none opacity-60' : ''}`}
         onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
         onDragLeave={() => setIsDragging(false)}
         onDrop={(e) => { e.preventDefault(); setIsDragging(false); handleFiles(e.dataTransfer.files); }}
-        onClick={() => inputRef.current?.click()}
+        onClick={() => !pdfLoading && inputRef.current?.click()}
       >
-        <p className="text-3xl mb-2">📁</p>
-        <p className="text-gray-600 font-medium">גרור קובץ לכאן או לחץ לבחירה</p>
-        <p className="text-sm text-gray-400 mt-1">Excel (.xlsx) · CSV — ייצוא ישיר מהבנק</p>
-        <input ref={inputRef} type="file" accept=".xlsx,.csv,.xls" multiple className="hidden"
-          onChange={(e) => handleFiles(e.target.files)} />
+        {pdfLoading ? (
+          <>
+            <p className="text-3xl mb-2 animate-pulse">🤖</p>
+            <p className="text-blue-600 font-medium">מנתח PDF עם AI...</p>
+            <p className="text-xs text-gray-400 mt-1">מחלץ תנועות — עשוי לקחת מספר שניות</p>
+          </>
+        ) : (
+          <>
+            <p className="text-3xl mb-2">📁</p>
+            <p className="text-gray-600 font-medium">גרור קובץ לכאן או לחץ לבחירה</p>
+            <p className="text-sm text-gray-400 mt-1">Excel (.xlsx) · CSV · PDF · תמונה (JPG/PNG) — ייצוא ישיר מהבנק</p>
+            <p className="text-xs text-gray-300 mt-0.5">PDF וגם תמונות מנותחים על-ידי AI · פרטים אישיים אינם נשלחים</p>
+          </>
+        )}
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".xlsx,.csv,.xls,.pdf,.jpg,.jpeg,.png,.webp"
+          multiple
+          className="hidden"
+          onChange={(e) => handleFiles(e.target.files)}
+        />
       </div>
 
       {error && <p className="text-red-500 text-sm">❌ {error}</p>}
 
-      {/* Parsed result preview — critical for debugging correlation */}
       {result && (
         <div className="space-y-3">
           <div className="flex items-center gap-3 flex-wrap">
             <span className={`text-sm font-semibold px-3 py-1 rounded-full ${
               result.transactions.length > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'
             }`}>
-              {result.transactions.length > 0 ? `✅ ${result.transactions.length} תנועות` : '⚠️ 0 תנועות נמצאו'}
+              {result.transactions.length > 0
+                ? `✅ ${result.transactions.length} תנועות`
+                : '⚠️ 0 תנועות נמצאו'}
             </span>
+
+            {result.source === 'pdf' && (
+              <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium">
+                🤖 PDF · {result.pageCount} עמ'
+              </span>
+            )}
+
             <span className="text-xs text-gray-400">
               {result.transactions.filter(t => t.isDebit).length} הוצאות ·{' '}
               {result.transactions.filter(t => !t.isDebit).length} הכנסות
             </span>
+
             {result.skippedBadDate > 0 && (
               <span className="text-xs text-orange-500">⚠️ {result.skippedBadDate} תנועות בלי תאריך תקין</span>
             )}
           </div>
 
-          {/* Column detection */}
-          <details className="text-xs text-gray-400">
-            <summary className="cursor-pointer hover:text-gray-600">עמודות שזוהו ({result.detectedColumns.length})</summary>
-            <p className="mt-1 bg-gray-50 p-2 rounded break-words">{result.detectedColumns.join(' | ')}</p>
-          </details>
+          {/* Column detection (xlsx/csv only) */}
+          {result.detectedColumns.length > 0 && (
+            <details className="text-xs text-gray-400">
+              <summary className="cursor-pointer hover:text-gray-600">עמודות שזוהו ({result.detectedColumns.length})</summary>
+              <p className="mt-1 bg-gray-50 p-2 rounded break-words">{result.detectedColumns.join(' | ')}</p>
+            </details>
+          )}
 
-          {/* Sample of parsed transactions — shows exactly what the chart will display */}
+          {/* Sample transactions */}
           {result.sampleRows.length > 0 && (
             <div>
               <p className="text-xs text-gray-500 mb-1 font-medium">תצוגה מקדימה (5 ראשונות):</p>
@@ -270,7 +345,9 @@ const FileUpload: FC<FileUploadProps> = ({ onTransactionsLoaded }) => {
                           {tx.date || '—'}
                         </td>
                         <td className="px-3 py-1.5 text-gray-700 max-w-xs truncate">{tx.description}</td>
-                        <td className="px-3 py-1.5 font-medium">₪{tx.amount.toLocaleString()}</td>
+                        <td className="px-3 py-1.5 font-medium">
+                          {tx.currency === 'USD' ? '$' : '₪'}{tx.amount.toLocaleString()}
+                        </td>
                         <td className={`px-3 py-1.5 font-medium ${tx.isDebit ? 'text-red-500' : 'text-green-600'}`}>
                           {tx.isDebit ? 'הוצאה' : 'הכנסה'}
                         </td>
@@ -279,9 +356,9 @@ const FileUpload: FC<FileUploadProps> = ({ onTransactionsLoaded }) => {
                   </tbody>
                 </table>
               </div>
-              {result.skippedBadDate > 0 && (
-                <p className="text-xs text-orange-500 mt-1">
-                  * תאריכים אדומים = פורמט לא מזוהה ויסוננו מהגרפים. ודא שהקובץ ייוצא כ-Excel ולא כ-PDF.
+              {result.source === 'pdf' && (
+                <p className="text-xs text-purple-500 mt-1">
+                  * נתחזה על-ידי AI — ייתכנו אי-דיוקים. ודא את הנתונים בטבלה.
                 </p>
               )}
             </div>
