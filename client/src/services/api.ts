@@ -55,6 +55,36 @@ export const api = {
       body: JSON.stringify({ categoryTotals, monthlyAvgBurn }),
     }),
 
+  // Parse a PDF or image bank statement via AI — returns extracted transactions
+  parsePdf: (base64: string, bankSource: string, mimeType = 'application/pdf') =>
+    request<{
+      transactions: import('../types').Transaction[];
+      pageCount: number;
+      charCount: number;
+    }>('/pdf/parse', {
+      method: 'POST',
+      body: JSON.stringify({ base64, bankSource, mimeType }),
+    }),
+
+  // Analyze a property document (clearing report, insurance, etc.) — returns cost line items
+  analyzePropDoc: (base64: string, docType: string, mimeType = 'application/pdf') =>
+    request<{
+      summary: string;
+      period: string | null;
+      totalAmount: number;
+      items: {
+        category: string;
+        name: string;
+        amount: number;
+        frequency: string;
+        currency: string;
+        confidence: string;
+      }[];
+    }>('/pdf/analyze-doc', {
+      method: 'POST',
+      body: JSON.stringify({ base64, docType, mimeType }),
+    }),
+
   // Classify Excel file via pure LLM classifier
   classifyExcel: (base64: string, filename: string) =>
     request<{

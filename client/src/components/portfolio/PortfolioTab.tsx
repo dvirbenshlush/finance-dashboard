@@ -1,4 +1,4 @@
-import { type FC, useRef, useState, useMemo, useEffect } from 'react';
+import { type FC, Fragment, useRef, useState, useMemo, useEffect } from 'react';
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend,
@@ -17,6 +17,8 @@ const BASE = 'http://localhost:3001/api';
 
 const fmt = (v: number, currency = 'USD') =>
   new Intl.NumberFormat('he-IL', { style: 'currency', currency, maximumFractionDigits: 0 }).format(v);
+
+const fmtILS = (v: number) => fmt(v, 'ILS');
 
 const COLORS = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316','#84cc16','#ec4899','#6366f1'];
 
@@ -174,27 +176,18 @@ function aggregateTotals(all: Position[]) {
   };
 }
 
-// ── Manual position helpers ───────────────────────────────────────────────────
+// ── Manual transaction store ──────────────────────────────────────────────────
+// Replaces the old "ManualPosition" aggregate. Each entry is a full StockTransaction
+// entered by the user. They are fed directly into computePositions so position
+// math (WAVG cost basis, realized P&L) works the same as for uploaded transactions.
 
-interface ManualPosition {
-  id: string;
-  symbol: string;
-  name?: string;
-  quantityHeld: number;
-  avgCostPerShare: number;
-}
+const LS_MANUAL_TXS = 'riseup_manual_txs';
+/** Legacy key — kept only for one-time migration on first load. */
+const LS_MANUAL_LEGACY = 'riseup_manual_positions';
 
-const LS_MANUAL = 'riseup_manual_positions';
-
-function manualToPosition(m: ManualPosition): Position {
-  const costBasis = m.avgCostPerShare * m.quantityHeld;
-  return {
-    symbol: m.symbol, name: m.name,
-    quantityBought: m.quantityHeld, quantitySold: 0, quantityHeld: m.quantityHeld,
-    totalBought: costBasis, totalSold: 0,
-    avgCostPerShare: m.avgCostPerShare, costBasis,
-    dividends: 0, fees: 0, realizedPnL: 0,
-  };
+interface LegacyManualPosition {
+  id: string; symbol: string; name?: string;
+  quantityHeld: number; avgCostPerShare: number; date?: string;
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -277,15 +270,51 @@ const PortfolioTab: FC = () => {
   const [quotesError, setQuotesError]     = useState<string | null>(null);
   const [quotesUpdated, setQuotesUpdated] = useState<Date | null>(null);
 
-  // Manual positions (persisted in localStorage)
-  const [manualPositions, setManualPositions] = useState<ManualPosition[]>(
-    () => { try { return JSON.parse(localStorage.getItem(LS_MANUAL) ?? '[]') as ManualPosition[]; } catch { return []; } }
-  );
+  // Manual transactions (persisted in localStorage; replaces old ManualPosition aggregate)
+  const [manualStoredTxs, setManualStoredTxs] = useState<StockTransaction[]>(() => {
+    try {
+      const raw = localStorage.getItem(LS_MANUAL_TXS);
+      if (raw) return JSON.parse(raw) as StockTransaction[];
+      // One-time migration from legacy ManualPosition format
+      const legacy = localStorage.getItem(LS_MANUAL_LEGACY);
+      if (legacy) {
+        const old = JSON.parse(legacy) as LegacyManualPosition[];
+        return old.map(m => ({
+          id: m.id,
+          date: m.date ?? new Date().toISOString().slice(0, 10),
+          symbol: m.symbol.toUpperCase(),
+          name: m.name,
+          action: 'buy' as const,
+          quantity: m.quantityHeld,
+          price: m.avgCostPerShare,
+          amount: m.avgCostPerShare * m.quantityHeld,
+          currency: 'USD',
+        }));
+      }
+    } catch { /* ignore */ }
+    return [];
+  });
+
+  const saveManualTxs = (next: StockTransaction[]) => {
+    setManualStoredTxs(next);
+    localStorage.setItem(LS_MANUAL_TXS, JSON.stringify(next));
+  };
+
   const [addingRow, setAddingRow]     = useState(false);
   const [newSymbol, setNewSymbol]     = useState('');
   const [newQty, setNewQty]           = useState('');
   const [newAvgCost, setNewAvgCost]   = useState('');
+  const [newDate, setNewDate]         = useState('');
   const [manualRowError, setManualRowError] = useState('');
+
+  // Inline edit state for individual manual transactions inside the history panel
+  const [editingManualTxId, setEditingManualTxId] = useState<string | null>(null);
+  const [editingManualTxDraft, setEditingManualTxDraft] = useState<Partial<StockTransaction>>({});
+  // "Add row to history" state — symbol currently being added to
+  const [addingHistoryFor, setAddingHistoryFor] = useState<string | null>(null);
+  const [historyForm, setHistoryForm] = useState<{ date: string; action: StockTransaction['action']; qty: string; price: string }>({
+    date: '', action: 'buy', qty: '', price: '',
+  });
 
   // Per-field overrides — user can correct any editable column for any position
   type OverrideField = 'quantityHeld' | 'avgCostPerShare' | 'realizedPnL' | 'dividends';
@@ -312,26 +341,96 @@ const PortfolioTab: FC = () => {
     setEditingCell(null);
   };
 
-  const saveManual = (next: ManualPosition[]) => {
-    setManualPositions(next);
-    localStorage.setItem(LS_MANUAL, JSON.stringify(next));
-  };
-
   const addManualRow = () => {
     setManualRowError('');
     const sym = newSymbol.trim().toUpperCase();
     const qty = parseFloat(newQty.replace(',', '.'));
     const avg = parseFloat(newAvgCost.replace(',', '.'));
-    if (!sym)             { setManualRowError('נדרש שם נייר ערך'); return; }
-    if (isNaN(qty) || qty <= 0) { setManualRowError('כמות לא תקינה'); return; }
-    if (isNaN(avg) || avg <= 0) { setManualRowError('עלות לא תקינה'); return; }
-    const next = [...manualPositions, { id: `m-${Date.now()}`, symbol: sym, quantityHeld: qty, avgCostPerShare: avg }];
-    saveManual(next);
+    if (!sym)                    { setManualRowError('נדרש שם נייר ערך'); return; }
+    if (isNaN(qty) || qty <= 0)  { setManualRowError('כמות לא תקינה');   return; }
+    if (isNaN(avg) || avg <= 0)  { setManualRowError('עלות לא תקינה');   return; }
+    saveManualTxs([...manualStoredTxs, {
+      id: `m-${Date.now()}`,
+      date: newDate || new Date().toISOString().slice(0, 10),
+      symbol: sym,
+      action: 'buy',
+      quantity: qty,
+      price: avg,
+      amount: qty * avg,
+      currency: 'USD',
+    }]);
     setAddingRow(false);
-    setNewSymbol(''); setNewQty(''); setNewAvgCost('');
+    setNewSymbol(''); setNewQty(''); setNewAvgCost(''); setNewDate('');
   };
 
-  const deleteManualRow = (id: string) => saveManual(manualPositions.filter(m => m.id !== id));
+  /** Delete all manual transactions for a given symbol (used by main table row ✕). */
+  const deleteManualSymbol = (sym: string) =>
+    saveManualTxs(manualStoredTxs.filter(t => t.symbol !== sym));
+
+  /** Delete a single manual transaction by id (used by history row trash icon). */
+  const deleteManualTx = (id: string) =>
+    saveManualTxs(manualStoredTxs.filter(t => t.id !== id));
+
+  /** Save inline edits to a manual transaction. */
+  const commitManualTxEdit = (id: string) => {
+    const draft = editingManualTxDraft;
+    saveManualTxs(manualStoredTxs.map(t => {
+      if (t.id !== id) return t;
+      const qty   = draft.quantity != null ? draft.quantity : t.quantity;
+      const price = draft.price    != null ? draft.price    : t.price;
+      return {
+        ...t,
+        date:     draft.date     ?? t.date,
+        action:   draft.action   ?? t.action,
+        quantity: qty,
+        price:    price,
+        amount:   (qty ?? 0) * (price ?? 0) || (draft.amount ?? t.amount),
+      };
+    }));
+    setEditingManualTxId(null);
+    setEditingManualTxDraft({});
+  };
+
+  /** Add a new transaction to an existing symbol's history. */
+  const addHistoryTx = (sym: string) => {
+    const qty   = parseFloat(historyForm.qty.replace(',', '.'));
+    const price = parseFloat(historyForm.price.replace(',', '.'));
+    if (isNaN(qty) || qty <= 0 || isNaN(price) || price <= 0) return;
+    saveManualTxs([...manualStoredTxs, {
+      id: `m-${Date.now()}`,
+      date: historyForm.date || new Date().toISOString().slice(0, 10),
+      symbol: sym,
+      action: historyForm.action,
+      quantity: qty,
+      price,
+      amount: qty * price,
+      currency: 'USD',
+    }]);
+    setAddingHistoryFor(null);
+    setHistoryForm({ date: '', action: 'buy', qty: '', price: '' });
+  };
+
+  // ── Forex (USD/ILS historical rates) ─────────────────────────────────────────
+  const [forexRates, setForexRates] = useState<Record<string, number>>({});
+  const [forexLoading, setForexLoading] = useState(false);
+
+  // Collapse state — which symbols have their transaction history expanded
+  const [expandedSymbols, setExpandedSymbols] = useState<Set<string>>(new Set());
+  const toggleExpanded = (symbol: string) =>
+    setExpandedSymbols(prev => {
+      const next = new Set(prev);
+      next.has(symbol) ? next.delete(symbol) : next.add(symbol);
+      return next;
+    });
+
+  // Return the closest available USD/ILS rate on or before the given date
+  const getRateForDate = (date: string): number | null => {
+    if (forexRates[date]) return forexRates[date];
+    const sorted = Object.keys(forexRates).sort();
+    let best: string | null = null;
+    for (const d of sorted) { if (d <= date) best = d; else break; }
+    return best ? forexRates[best] : null;
+  };
 
   // Load persisted stock transactions from server on mount
   useEffect(() => {
@@ -341,17 +440,33 @@ const PortfolioTab: FC = () => {
       .finally(() => setLoadingStored(false));
   }, []);
 
-  // Computed positions (weighted avg cost, realized P&L)
-  const positions = useMemo(() => computePositions(transactions), [transactions]);
+  // Fetch USD/ILS historical rates whenever any transactions change
+  useEffect(() => {
+    const allDates = [...transactions, ...manualStoredTxs].map(t => t.date).sort();
+    if (allDates.length === 0) return;
+    const from = allDates[0];
+    const to   = new Date().toISOString().slice(0, 10);
+    setForexLoading(true);
+    fetch(`${BASE}/portfolio/forex-rates?from=${from}&to=${to}`)
+      .then(r => r.json())
+      .then((data: Record<string, number>) => setForexRates(data))
+      .catch(e => console.warn('[forex-rates]', e))
+      .finally(() => setForexLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transactions, manualStoredTxs]);
 
-  // All held symbols (from transactions + manual)
-  const allHeldSymbols = useMemo(() => {
-    const fromTx  = Object.values(positions).filter(p => p.quantityHeld > 0.0001).map(p => p.symbol);
-    const fromMan = manualPositions.map(m => m.symbol);
-    return [...new Set([...fromTx, ...fromMan])];
-  }, [positions, manualPositions]);
+  // Computed positions — manual txs are fed in directly alongside file-parsed txs
+  const positions = useMemo(
+    () => computePositions([...transactions, ...manualStoredTxs]),
+    [transactions, manualStoredTxs]
+  );
 
-  // Merge transaction-derived + manual positions, both enriched with live prices
+  // All held symbols (derived purely from positions now)
+  const allHeldSymbols = useMemo(() =>
+    Object.values(positions).filter(p => p.quantityHeld > 0.0001).map(p => p.symbol),
+  [positions]);
+
+  // Enrich positions with live quotes (no more separate manual merge needed)
   const enrichedPositions = useMemo<Position[]>(() => {
     const enrichOne = (p: Position, q?: Quote): Position => {
       if (!q || p.quantityHeld <= 0.0001) return p;
@@ -363,32 +478,7 @@ const PortfolioTab: FC = () => {
     };
 
     const quoteMap = new Map(quotes.map(q => [q.symbol, q]));
-
-    // Build map from TX-derived positions
-    const bySymbol = new Map<string, Position>(
-      Object.values(positions).map(p => [p.symbol, p])
-    );
-
-    // Merge every manual position into the map
-    for (const m of manualPositions) {
-      const manualCost = m.avgCostPerShare * m.quantityHeld;
-      if (bySymbol.has(m.symbol)) {
-        // Symbol exists in TX data — add the manual qty/cost on top
-        const ex = bySymbol.get(m.symbol)!;
-        const newHeld      = ex.quantityHeld + m.quantityHeld;
-        const newCostBasis = ex.costBasis    + manualCost;
-        bySymbol.set(m.symbol, {
-          ...ex,
-          quantityHeld:    newHeld,
-          costBasis:       newCostBasis,
-          avgCostPerShare: newHeld > 0 ? newCostBasis / newHeld : 0,
-          totalBought:     ex.totalBought + manualCost,
-        });
-      } else {
-        // New symbol — add as standalone manual position
-        bySymbol.set(m.symbol, manualToPosition(m));
-      }
-    }
+    const bySymbol = new Map<string, Position>(Object.values(positions).map(p => [p.symbol, p]));
 
     // Apply per-field overrides — user edits take precedence over computed values
     for (const [sym, ov] of Object.entries(positionOverrides)) {
@@ -407,9 +497,30 @@ const PortfolioTab: FC = () => {
     }
 
     return Array.from(bySymbol.values()).map(p => enrichOne(p, quoteMap.get(p.symbol)));
-  }, [positions, manualPositions, quotes, positionOverrides]);
+  }, [positions, quotes, positionOverrides]);
 
   const totals = useMemo(() => aggregateTotals(enrichedPositions), [enrichedPositions]);
+
+  // ILS summary — converts every transaction (file + manual) to shekels
+  const ilsSummary = useMemo(() => {
+    if (Object.keys(forexRates).length === 0) return null;
+    let investedILS = 0, proceedsILS = 0, dividendsILS = 0, feesILS = 0;
+    for (const tx of [...transactions, ...manualStoredTxs]) {
+      const rate = getRateForDate(tx.date);
+      if (!rate) continue;
+      const amtILS = Math.abs(tx.amount) * rate;
+      if      (tx.action === 'buy')      investedILS   += amtILS;
+      else if (tx.action === 'sell')     proceedsILS   += amtILS;
+      else if (tx.action === 'dividend') dividendsILS  += amtILS;
+      else if (tx.action === 'fee')      feesILS       += amtILS;
+    }
+    const today      = new Date().toISOString().slice(0, 10);
+    const currentRate = getRateForDate(today) ?? 0;
+    const currentValueILS = totals.totalCurrentValue * currentRate;
+    const totalReturnILS = currentValueILS + proceedsILS + dividendsILS - feesILS - investedILS;
+    return { investedILS, proceedsILS, dividendsILS, feesILS, currentValueILS, currentRate, totalReturnILS };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forexRates, transactions, manualStoredTxs, totals.totalCurrentValue]);
 
   // Fetch live quotes whenever held symbols change
   useEffect(() => {
@@ -534,7 +645,7 @@ const PortfolioTab: FC = () => {
   const totalPnL    = totals.totalUnrealized + totals.totalRealized;
   const totalPnLPct = totals.totalBought > 0 ? (totalPnL / totals.totalBought) * 100 : 0;
 
-  const hasData = transactions.length > 0 || manualPositions.length > 0;
+  const hasData = transactions.length > 0 || manualStoredTxs.length > 0;
 
   // ── Loading state (waiting for server on first mount) ────────────────────────
 
@@ -583,7 +694,7 @@ const PortfolioTab: FC = () => {
         <div className="bg-white rounded-xl border border-dashed border-gray-200 p-4 text-center">
           <p className="text-xs text-gray-400 mb-2">או הוסף עמדות ידנית ללא קובץ</p>
           <button
-            onClick={() => { setAddingRow(true); setNewSymbol(''); setNewQty(''); setNewAvgCost(''); }}
+            onClick={() => { setAddingRow(true); setNewSymbol(''); setNewQty(''); setNewAvgCost(''); setNewDate(''); }}
             className="text-xs text-blue-600 hover:text-blue-800 font-medium underline"
           >
             + הוסף שורה ידנית
@@ -599,8 +710,10 @@ const PortfolioTab: FC = () => {
               <input value={newAvgCost} onChange={e => setNewAvgCost(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && addManualRow()}
                 placeholder="עלות ממוצעת $" className="w-28 border border-blue-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500" />
+              <input type="date" value={newDate} onChange={e => setNewDate(e.target.value)}
+                className="border border-blue-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500" />
               <button onClick={addManualRow} className="bg-blue-600 text-white text-xs px-3 py-1 rounded hover:bg-blue-700">הוסף</button>
-              <button onClick={() => { setAddingRow(false); setManualRowError(''); }} className="text-gray-400 hover:text-red-500 text-xs">ביטול</button>
+              <button onClick={() => { setAddingRow(false); setManualRowError(''); setNewDate(''); }} className="text-gray-400 hover:text-red-500 text-xs">ביטול</button>
               {manualRowError && <span className="text-xs text-red-500 w-full text-center">{manualRowError}</span>}
             </div>
           )}
@@ -621,8 +734,8 @@ const PortfolioTab: FC = () => {
           </h2>
           <p className="text-xs text-gray-400">
             {transactions.length > 0 ? `${transactions.length} פעולות` : ''}
-            {transactions.length > 0 && manualPositions.length > 0 ? ' · ' : ''}
-            {manualPositions.length > 0 ? `${manualPositions.length} עמדות ידניות` : ''}
+            {transactions.length > 0 && manualStoredTxs.length > 0 ? ' · ' : ''}
+            {manualStoredTxs.length > 0 ? `${manualStoredTxs.length} פעולות ידניות` : ''}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -640,6 +753,11 @@ const PortfolioTab: FC = () => {
             onClick={() => {
               api.clearStockTransactions().catch(() => {});
               setTransactions([]); setAnalysis(null); setFileName(null);
+              saveManualTxs([]);
+              setPositionOverrides({});
+              localStorage.removeItem(LS_OVERRIDES);
+              setExpandedSymbols(new Set());
+              setForexRates({});
             }}
             className="text-xs text-red-400 hover:text-red-600 underline"
           >
@@ -768,7 +886,7 @@ const PortfolioTab: FC = () => {
       </div>
 
       {/* Holdings table */}
-      {(enrichedPositions.length > 0 || manualPositions.length > 0 || true) && (
+      {(enrichedPositions.length > 0 || manualStoredTxs.length > 0 || true) && (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-gray-700">אחזקות ועמדות</h3>
@@ -777,7 +895,7 @@ const PortfolioTab: FC = () => {
                 <span>✅ מקובץ</span><span>✏️ ידני</span><span>📦 סגורה</span>
               </div>
               <button
-                onClick={() => { setAddingRow(true); setNewSymbol(''); setNewQty(''); setNewAvgCost(''); }}
+                onClick={() => { setAddingRow(true); setNewSymbol(''); setNewQty(''); setNewAvgCost(''); setNewDate(''); }}
                 className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium"
               >
                 + הוסף שורה ידנית
@@ -804,15 +922,30 @@ const PortfolioTab: FC = () => {
                 {enrichedPositions
                   .sort((a, b) => (b.currentValue ?? b.costBasis) - (a.currentValue ?? a.costBasis))
                   .map((p, idx) => {
-                    const isManual = manualPositions.some(m => m.symbol === p.symbol) &&
-                      !(positions[p.symbol]?.quantityBought > 0);
+                    const isManual = manualStoredTxs.some(t => t.symbol === p.symbol);
+                    const isExpanded = expandedSymbols.has(p.symbol);
+                    const symManualTxs = manualStoredTxs.filter(t => t.symbol === p.symbol);
+                    const symTxs = [
+                      ...transactions.filter(t => t.symbol.toUpperCase() === p.symbol && ['buy','sell','dividend','fee'].includes(t.action)),
+                      ...symManualTxs,
+                    ].sort((a, b) => a.date.localeCompare(b.date));
+                    const isManualSymbol = symManualTxs.length > 0;
                     return (
-                      <tr key={`${p.symbol}-${idx}`} className={`hover:bg-gray-50 ${isManual ? 'bg-blue-50/30' : ''}`}>
+                      <Fragment key={`${p.symbol}-${idx}`}>
+                      <tr className={`hover:bg-gray-50 ${isManual ? 'bg-blue-50/30' : ''} ${isExpanded ? 'bg-blue-50/20' : ''}`}>
                         <td className="px-3 py-2.5">
-                          {isManual ? (
-                            <button onClick={() => deleteManualRow(manualPositions.find(m => m.symbol === p.symbol)!.id)}
-                              className="text-gray-300 hover:text-red-500 transition-colors" title="הסר שורה">✕</button>
-                          ) : <span className="text-gray-200">·</span>}
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => toggleExpanded(p.symbol)}
+                              className="text-gray-400 hover:text-blue-500 transition-colors text-xs w-4"
+                              title="היסטוריית פעולות"
+                            >{isExpanded ? '▼' : '▶'}</button>
+                            {isManual
+                              ? <button onClick={() => deleteManualSymbol(p.symbol)}
+                                  className="text-gray-300 hover:text-red-500 transition-colors text-xs" title="הסר שורה">✕</button>
+                              : <span className="text-gray-200 text-xs">·</span>
+                            }
+                          </div>
                         </td>
                         <td className="px-4 py-2.5">
                           <div className="flex items-center gap-1.5">
@@ -901,6 +1034,216 @@ const PortfolioTab: FC = () => {
                           ) : '—'}
                         </td>
                       </tr>
+
+                      {/* ── Collapsed transaction history ── */}
+                      {isExpanded && (
+                        <tr>
+                          <td colSpan={10} className="p-0 border-b border-blue-100">
+                            <div className="bg-gradient-to-b from-blue-50/60 to-white px-8 py-4">
+                              <p className="text-xs font-semibold text-blue-700 mb-2">
+                                היסטוריית פעולות — {p.symbol}
+                                {forexLoading && <span className="mr-2 text-gray-400 font-normal">טוען שערי חליפין…</span>}
+                              </p>
+                              {symTxs.length === 0 && !isManualSymbol
+                                ? <p className="text-xs text-gray-400">אין פעולות מפורטות בדוח עבור נייר זה</p>
+                                : (
+                                  <table className="w-full text-xs mb-3">
+                                    <thead>
+                                      <tr className="text-gray-400 border-b border-gray-200">
+                                        <th className="text-right pb-1 pr-3">תאריך</th>
+                                        <th className="text-right pb-1 pr-3">פעולה</th>
+                                        <th className="text-right pb-1 pr-3">כמות</th>
+                                        <th className="text-right pb-1 pr-3">מחיר $</th>
+                                        <th className="text-right pb-1 pr-3">סכום $</th>
+                                        <th className="text-right pb-1 pr-3">שע"ח ₪/$</th>
+                                        <th className="text-right pb-1 pr-3">סכום ₪</th>
+                                        {isManualSymbol && <th className="pb-1"></th>}
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-100">
+                                      {symTxs.map(tx => {
+                                        const isMTx = symManualTxs.some(m => m.id === tx.id);
+                                        const isEditingThis = editingManualTxId === tx.id;
+                                        const rate   = getRateForDate(tx.date);
+                                        const amtUSD = Math.abs(isEditingThis && editingManualTxDraft.amount != null ? editingManualTxDraft.amount : tx.amount);
+                                        const amtILS = rate ? amtUSD * rate : null;
+                                        if (isEditingThis) {
+                                          const draft = editingManualTxDraft;
+                                          const dQty   = draft.quantity != null ? String(draft.quantity) : String(tx.quantity ?? '');
+                                          const dPrice = draft.price    != null ? String(draft.price)    : String(tx.price    ?? '');
+                                          return (
+                                            <tr key={tx.id} className="bg-yellow-50">
+                                              <td className="py-1 pr-2">
+                                                <input type="date" value={draft.date ?? tx.date}
+                                                  onChange={e => setEditingManualTxDraft(d => ({ ...d, date: e.target.value }))}
+                                                  className="border border-yellow-300 rounded px-1 py-0.5 text-xs w-28" />
+                                              </td>
+                                              <td className="py-1 pr-2">
+                                                <select value={draft.action ?? tx.action}
+                                                  onChange={e => setEditingManualTxDraft(d => ({ ...d, action: e.target.value as StockTransaction['action'] }))}
+                                                  className="border border-yellow-300 rounded px-1 py-0.5 text-xs">
+                                                  {(['buy','sell','dividend','fee','interest','other'] as const).map(a =>
+                                                    <option key={a} value={a}>{ACTION_LABEL[a] ?? a}</option>
+                                                  )}
+                                                </select>
+                                              </td>
+                                              <td className="py-1 pr-2">
+                                                <input type="number" step="any" min="0" value={dQty}
+                                                  onChange={e => setEditingManualTxDraft(d => {
+                                                    const q = parseFloat(e.target.value);
+                                                    const pr = d.price != null ? d.price : (tx.price ?? 0);
+                                                    return { ...d, quantity: isNaN(q) ? undefined : q, amount: isNaN(q) ? d.amount : q * pr };
+                                                  })}
+                                                  className="border border-yellow-300 rounded px-1 py-0.5 text-xs w-20" />
+                                              </td>
+                                              <td className="py-1 pr-2">
+                                                <input type="number" step="any" min="0" value={dPrice}
+                                                  onChange={e => setEditingManualTxDraft(d => {
+                                                    const pr = parseFloat(e.target.value);
+                                                    const q  = d.quantity != null ? d.quantity : (tx.quantity ?? 0);
+                                                    return { ...d, price: isNaN(pr) ? undefined : pr, amount: isNaN(pr) ? d.amount : q * pr };
+                                                  })}
+                                                  className="border border-yellow-300 rounded px-1 py-0.5 text-xs w-20" />
+                                              </td>
+                                              <td className="py-1 pr-2 tabular-nums text-xs text-gray-500 italic">
+                                                {editingManualTxDraft.amount != null ? fmt(editingManualTxDraft.amount) : fmt(tx.amount)}
+                                              </td>
+                                              <td className="py-1 pr-2 tabular-nums text-gray-400 text-xs">{rate ? rate.toFixed(3) : '—'}</td>
+                                              <td className="py-1 pr-2 tabular-nums text-xs text-gray-500">
+                                                {amtILS != null ? fmtILS(amtILS) : '—'}
+                                              </td>
+                                              <td className="py-1 flex gap-1">
+                                                <button onClick={() => commitManualTxEdit(tx.id)}
+                                                  onKeyDown={e => e.key === 'Enter' && commitManualTxEdit(tx.id)}
+                                                  className="text-xs px-2 py-0.5 bg-green-500 text-white rounded hover:bg-green-600">✓</button>
+                                                <button onClick={() => { setEditingManualTxId(null); setEditingManualTxDraft({}); }}
+                                                  className="text-xs px-2 py-0.5 bg-gray-200 text-gray-600 rounded hover:bg-gray-300">✕</button>
+                                              </td>
+                                            </tr>
+                                          );
+                                        }
+                                        return (
+                                          <tr key={tx.id} className={`group hover:bg-blue-50/40 ${isMTx ? 'bg-blue-50/20' : ''}`}>
+                                            <td className="py-1.5 pr-3 tabular-nums text-gray-500">{tx.date}</td>
+                                            <td className="py-1.5 pr-3">
+                                              <span className={`px-1.5 py-0.5 rounded text-xs ${ACTION_COLOR[tx.action] ?? 'bg-gray-100 text-gray-600'}`}>
+                                                {ACTION_LABEL[tx.action] ?? tx.action}
+                                              </span>
+                                            </td>
+                                            <td className="py-1.5 pr-3 tabular-nums text-gray-700">{tx.quantity != null ? tx.quantity.toFixed(4) : '—'}</td>
+                                            <td className="py-1.5 pr-3 tabular-nums text-gray-600">{tx.price != null ? `$${tx.price.toFixed(2)}` : '—'}</td>
+                                            <td className={`py-1.5 pr-3 tabular-nums font-medium ${tx.action === 'buy' ? 'text-blue-600' : tx.action === 'sell' ? 'text-green-600' : 'text-gray-600'}`}>
+                                              {tx.action === 'buy' ? '-' : tx.action === 'sell' ? '+' : ''}{fmt(amtUSD)}
+                                            </td>
+                                            <td className="py-1.5 pr-3 tabular-nums text-gray-400">{rate ? rate.toFixed(3) : '—'}</td>
+                                            <td className={`py-1.5 pr-3 tabular-nums font-medium ${tx.action === 'buy' ? 'text-blue-600' : tx.action === 'sell' ? 'text-green-600' : 'text-gray-600'}`}>
+                                              {amtILS != null ? `${tx.action === 'buy' ? '-' : tx.action === 'sell' ? '+' : ''}${fmtILS(amtILS)}` : '—'}
+                                            </td>
+                                            {isManualSymbol && (
+                                              <td className="py-1.5 text-left">
+                                                {isMTx && (
+                                                  <span className="flex gap-1 opacity-0 group-hover:opacity-100 hover:opacity-100">
+                                                    <button onClick={() => { setEditingManualTxId(tx.id); setEditingManualTxDraft({}); }}
+                                                      className="text-blue-400 hover:text-blue-600 text-xs" title="ערוך">✏️</button>
+                                                    <button onClick={() => deleteManualTx(tx.id)}
+                                                      className="text-gray-300 hover:text-red-500 text-xs" title="מחק">🗑</button>
+                                                  </span>
+                                                )}
+                                              </td>
+                                            )}
+                                          </tr>
+                                        );
+                                      })}
+
+                                      {/* ── Add new history row form ── */}
+                                      {isManualSymbol && addingHistoryFor === p.symbol && (
+                                        <tr className="bg-green-50 border-t border-green-200">
+                                          <td className="py-1.5 pr-2">
+                                            <input type="date" value={historyForm.date}
+                                              onChange={e => setHistoryForm(f => ({ ...f, date: e.target.value }))}
+                                              onKeyDown={e => e.key === 'Enter' && addHistoryTx(p.symbol)}
+                                              className="border border-green-300 rounded px-1 py-0.5 text-xs w-28" />
+                                          </td>
+                                          <td className="py-1.5 pr-2">
+                                            <select value={historyForm.action}
+                                              onChange={e => setHistoryForm(f => ({ ...f, action: e.target.value as StockTransaction['action'] }))}
+                                              className="border border-green-300 rounded px-1 py-0.5 text-xs">
+                                              {(['buy','sell','dividend','fee','interest','other'] as const).map(a =>
+                                                <option key={a} value={a}>{ACTION_LABEL[a] ?? a}</option>
+                                              )}
+                                            </select>
+                                          </td>
+                                          <td className="py-1.5 pr-2">
+                                            <input type="number" step="any" min="0" placeholder="כמות"
+                                              value={historyForm.qty}
+                                              onChange={e => setHistoryForm(f => ({ ...f, qty: e.target.value }))}
+                                              onKeyDown={e => e.key === 'Enter' && addHistoryTx(p.symbol)}
+                                              className="border border-green-300 rounded px-1 py-0.5 text-xs w-20" />
+                                          </td>
+                                          <td className="py-1.5 pr-2">
+                                            <input type="number" step="any" min="0" placeholder="מחיר $"
+                                              value={historyForm.price}
+                                              onChange={e => setHistoryForm(f => ({ ...f, price: e.target.value }))}
+                                              onKeyDown={e => e.key === 'Enter' && addHistoryTx(p.symbol)}
+                                              className="border border-green-300 rounded px-1 py-0.5 text-xs w-20" />
+                                          </td>
+                                          <td className="py-1.5 pr-2 text-xs text-gray-400 italic tabular-nums">
+                                            {historyForm.qty && historyForm.price ? fmt(parseFloat(historyForm.qty) * parseFloat(historyForm.price)) : '—'}
+                                          </td>
+                                          <td colSpan={isManualSymbol ? 3 : 2} className="py-1.5">
+                                            <div className="flex gap-1">
+                                              <button onClick={() => addHistoryTx(p.symbol)}
+                                                className="text-xs px-2 py-0.5 bg-green-500 text-white rounded hover:bg-green-600">הוסף</button>
+                                              <button onClick={() => { setAddingHistoryFor(null); setHistoryForm({ date:'', action:'buy', qty:'', price:'' }); }}
+                                                className="text-xs px-2 py-0.5 bg-gray-200 text-gray-600 rounded hover:bg-gray-300">ביטול</button>
+                                            </div>
+                                          </td>
+                                        </tr>
+                                      )}
+                                    </tbody>
+                                  </table>
+                                )
+                              }
+
+                              {/* Add row button for manual symbols */}
+                              {isManualSymbol && addingHistoryFor !== p.symbol && (
+                                <button
+                                  onClick={() => { setAddingHistoryFor(p.symbol); setHistoryForm({ date: '', action: 'buy', qty: '', price: '' }); }}
+                                  className="text-xs text-green-600 hover:text-green-800 font-medium mb-3 flex items-center gap-1"
+                                >
+                                  ➕ הוסף פעולה
+                                </button>
+                              )}
+
+                              {/* Per-position ILS mini-summary */}
+                              {(() => {
+                                let posInvILS = 0, posSoldILS = 0, posDivILS = 0;
+                                for (const tx of symTxs) {
+                                  const rate = getRateForDate(tx.date);
+                                  if (!rate) continue;
+                                  const a = Math.abs(tx.amount) * rate;
+                                  if (tx.action === 'buy')           posInvILS  += a;
+                                  else if (tx.action === 'sell')     posSoldILS += a;
+                                  else if (tx.action === 'dividend') posDivILS  += a;
+                                }
+                                const rate = getRateForDate(new Date().toISOString().slice(0,10)) ?? 0;
+                                const curValILS = (p.currentValue ?? p.costBasis) * rate;
+                                const pnlILS = curValILS + posSoldILS + posDivILS - posInvILS;
+                                return (
+                                  <div className="flex flex-wrap gap-4 text-xs border-t border-blue-100 pt-2">
+                                    <span className="text-gray-500">הושקע: <strong className="text-blue-600">{fmtILS(posInvILS)}</strong></span>
+                                    <span className="text-gray-500">מומש: <strong className="text-green-600">{fmtILS(posSoldILS)}</strong></span>
+                                    <span className="text-gray-500">דיבידנדים: <strong className="text-yellow-600">{fmtILS(posDivILS)}</strong></span>
+                                    <span className="text-gray-500">שווי כיום: <strong className="text-indigo-600">{fmtILS(curValILS)}</strong></span>
+                                    <span className="text-gray-500">רווח/הפסד ₪: <strong className={pnlILS >= 0 ? 'text-green-600' : 'text-red-500'}>{pnlILS >= 0 ? '+' : ''}{fmtILS(pnlILS)}</strong></span>
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      </Fragment>
                     );
                   })}
 
@@ -908,7 +1251,7 @@ const PortfolioTab: FC = () => {
                 {addingRow && (
                   <tr className="bg-blue-50 border-t-2 border-blue-200">
                     <td className="px-3 py-2">
-                      <button onClick={() => setAddingRow(false)} className="text-gray-400 hover:text-red-500">✕</button>
+                      <button onClick={() => { setAddingRow(false); setNewDate(''); }} className="text-gray-400 hover:text-red-500">✕</button>
                     </td>
                     <td className="px-2 py-2">
                       <input
@@ -943,7 +1286,15 @@ const PortfolioTab: FC = () => {
                     <td className="px-2 py-2 text-xs text-gray-400 italic">
                       {newQty && newAvgCost ? fmt(parseFloat(newQty) * parseFloat(newAvgCost)) : '—'}
                     </td>
-                    <td colSpan={5} className="px-2 py-2">
+                    <td className="px-2 py-2">
+                      <input
+                        type="date"
+                        value={newDate}
+                        onChange={e => setNewDate(e.target.value)}
+                        className="border border-blue-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                    </td>
+                    <td colSpan={4} className="px-2 py-2">
                       <button
                         onClick={addManualRow}
                         className="px-3 py-1 bg-blue-600 text-white rounded text-xs font-medium hover:bg-blue-700"
@@ -1012,6 +1363,33 @@ const PortfolioTab: FC = () => {
           </div>
         </details>
       </div>
+
+      {/* ── ILS Summary ── */}
+      {ilsSummary && (
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold text-gray-700">סיכום בשקלים ₪</h3>
+            <span className="text-xs text-gray-400">שע"ח כיום: ₪{ilsSummary.currentRate.toFixed(3)} ל-$1</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+            <KpiCard label="סה״כ הושקע ₪"     value={fmtILS(ilsSummary.investedILS)}     color="text-blue-600" />
+            <KpiCard label="סה״כ מומש ₪"       value={fmtILS(ilsSummary.proceedsILS)}     color="text-green-600" />
+            <KpiCard label="דיבידנדים ₪"        value={fmtILS(ilsSummary.dividendsILS)}    color="text-yellow-600" />
+            <KpiCard label="שווי תיק כיום ₪"   value={fmtILS(ilsSummary.currentValueILS)} color="text-indigo-600" />
+            <KpiCard
+              label="רווח / הפסד כולל ₪"
+              value={`${ilsSummary.totalReturnILS >= 0 ? '+' : ''}${fmtILS(ilsSummary.totalReturnILS)}`}
+              color={ilsSummary.totalReturnILS >= 0 ? 'text-green-600' : 'text-red-500'}
+              sub={ilsSummary.investedILS > 0
+                ? `${((ilsSummary.totalReturnILS / ilsSummary.investedILS) * 100).toFixed(1)}% על ההשקעה`
+                : undefined}
+            />
+          </div>
+          <p className="text-xs text-gray-400 mt-3">
+            * מחושב לפי שערי USD/ILS היסטוריים בתאריך כל פעולה (מקור: Yahoo Finance)
+          </p>
+        </div>
+      )}
 
       {/* AI Analysis section */}
       <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">

@@ -4,7 +4,9 @@ import CashflowTab from './components/cashflow/CashflowTab';
 import PortfolioTab from './components/portfolio/PortfolioTab';
 import AssetsTab from './components/assets/AssetsTab';
 import LoansTab from './components/loans/LoansTab';
+import SavingsTab from './components/savings/SavingsTab';
 import CalendarTab from './components/calendar/CalendarTab';
+import DealTab from './components/deal/DealTab';
 import type { Transaction, TransactionCategory, Portfolio } from './types';
 import { api } from './services/api';
 
@@ -48,10 +50,19 @@ const EMPTY_PORTFOLIO: Portfolio = {
   netWorthILS: 0,
 };
 
+const LS_PORTFOLIO = 'riseup_portfolio_cache';
+
+function loadCachedPortfolio(): Portfolio {
+  try {
+    const raw = localStorage.getItem(LS_PORTFOLIO);
+    return raw ? JSON.parse(raw) as Portfolio : EMPTY_PORTFOLIO;
+  } catch { return EMPTY_PORTFOLIO; }
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<TabId>('cashflow' as TabId);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [portfolio, setPortfolio] = useState<Portfolio>(EMPTY_PORTFOLIO);
+  const [portfolio, setPortfolio] = useState<Portfolio>(() => loadCachedPortfolio());
   const [dbStatus, setDbStatus] = useState<'loading' | 'ready' | 'offline'>('loading');
   const [categorizing, setCategorizing] = useState(false);
   const [categorizeError, setCategorizeError] = useState<string | null>(null);
@@ -138,8 +149,11 @@ function App() {
     load();
   }, [runCategorize]);
 
-  // Persist portfolio whenever it changes
+  // Persist portfolio — localStorage always, server when online
   useEffect(() => {
+    if (portfolio.assets.length > 0 || portfolio.loans.length > 0) {
+      localStorage.setItem(LS_PORTFOLIO, JSON.stringify(portfolio));
+    }
     if (dbStatus !== 'ready') return;
     api.savePortfolio(portfolio).catch(() => {/* silent */});
   }, [portfolio, dbStatus]);
@@ -323,9 +337,13 @@ function App() {
         {activeTab === 'loans' && (
           <LoansTab portfolio={portfolio} onPortfolioChange={setPortfolio} />
         )}
+        {activeTab === 'savings' && (
+          <SavingsTab portfolio={portfolio} onPortfolioChange={setPortfolio} />
+        )}
         {activeTab === 'calendar' && (
           <CalendarTab transactions={filteredTransactions} />
         )}
+        {activeTab === 'deal' && <DealTab portfolio={portfolio} onPortfolioChange={setPortfolio} />}
       </main>
     </div>
   );
