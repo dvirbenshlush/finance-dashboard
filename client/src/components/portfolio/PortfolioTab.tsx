@@ -15,6 +15,14 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 
 const BASE = 'http://localhost:3001/api';
 
+/** Fetch helper that attaches the JWT token — mirrors api.ts for direct fetch calls */
+const authFetch = (url: string) =>
+  fetch(url, {
+    headers: {
+      Authorization: `Bearer ${localStorage.getItem('otzar_token') ?? ''}`,
+    },
+  });
+
 const fmt = (v: number, currency = 'USD') =>
   new Intl.NumberFormat('he-IL', { style: 'currency', currency, maximumFractionDigits: 0 }).format(v);
 
@@ -300,6 +308,26 @@ const PortfolioTab: FC = () => {
     localStorage.setItem(LS_MANUAL_TXS, JSON.stringify(next));
   };
 
+  // ── Uninvested cash ───────────────────────────────────────────────────────────
+  const LS_CASH = 'otzar_cash_balance';
+  const [cashBalance, setCashBalance] = useState<{ usd: number; ils: number }>(() => {
+    try { return JSON.parse(localStorage.getItem('otzar_cash_balance') ?? 'null') ?? { usd: 0, ils: 0 }; }
+    catch { return { usd: 0, ils: 0 }; }
+  });
+  const [editingCash, setEditingCash] = useState<{ field: 'usd' | 'ils'; value: string } | null>(null);
+
+  const saveCash = (next: { usd: number; ils: number }) => {
+    setCashBalance(next);
+    localStorage.setItem(LS_CASH, JSON.stringify(next));
+  };
+
+  const commitCashEdit = () => {
+    if (!editingCash) return;
+    const val = parseFloat(editingCash.value.replace(',', '.'));
+    if (!isNaN(val) && val >= 0) saveCash({ ...cashBalance, [editingCash.field]: val });
+    setEditingCash(null);
+  };
+
   const [addingRow, setAddingRow]     = useState(false);
   const [newSymbol, setNewSymbol]     = useState('');
   const [newQty, setNewQty]           = useState('');
@@ -447,7 +475,7 @@ const PortfolioTab: FC = () => {
     const from = allDates[0];
     const to   = new Date().toISOString().slice(0, 10);
     setForexLoading(true);
-    fetch(`${BASE}/portfolio/forex-rates?from=${from}&to=${to}`)
+    authFetch(`${BASE}/portfolio/forex-rates?from=${from}&to=${to}`)
       .then(r => r.json())
       .then((data: Record<string, number>) => setForexRates(data))
       .catch(e => console.warn('[forex-rates]', e))
@@ -527,9 +555,12 @@ const PortfolioTab: FC = () => {
     if (allHeldSymbols.length === 0) { setQuotes([]); return; }
     setQuotesLoading(true);
     setQuotesError(null);
-    fetch(`${BASE}/portfolio/quotes?symbols=${allHeldSymbols.join(',')}`)
+    authFetch(`${BASE}/portfolio/quotes?symbols=${allHeldSymbols.join(',')}`)
       .then(r => r.json())
-      .then((data: Quote[]) => { setQuotes(data); setQuotesUpdated(new Date()); })
+      .then((data: Quote[] | { error: string }) => {
+        setQuotes(Array.isArray(data) ? data : []);
+        setQuotesUpdated(new Date());
+      })
       .catch(e => setQuotesError(String(e)))
       .finally(() => setQuotesLoading(false));
   }, [allHeldSymbols]);
@@ -561,9 +592,12 @@ const PortfolioTab: FC = () => {
     if (allHeldSymbols.length === 0) return;
     setQuotesLoading(true);
     setQuotesError(null);
-    fetch(`${BASE}/portfolio/quotes?symbols=${allHeldSymbols.join(',')}`)
+    authFetch(`${BASE}/portfolio/quotes?symbols=${allHeldSymbols.join(',')}`)
       .then(r => r.json())
-      .then((data: Quote[]) => { setQuotes(data); setQuotesUpdated(new Date()); })
+      .then((data: Quote[] | { error: string }) => {
+        setQuotes(Array.isArray(data) ? data : []);
+        setQuotesUpdated(new Date());
+      })
       .catch(e => setQuotesError(String(e)))
       .finally(() => setQuotesLoading(false));
   };
@@ -644,6 +678,20 @@ const PortfolioTab: FC = () => {
 
   const totalPnL    = totals.totalUnrealized + totals.totalRealized;
   const totalPnLPct = totals.totalBought > 0 ? (totalPnL / totals.totalBought) * 100 : 0;
+
+  // Current forex rate (most recent available)
+  const currentForexRate = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const sorted = Object.keys(forexRates).sort();
+    let best: string | null = null;
+    for (const d of sorted) { if (d <= today) best = d; else break; }
+    return best ? forexRates[best] : null;
+  }, [forexRates]);
+
+  const cashTotalILS = (cashBalance.usd * (currentForexRate ?? 0)) + cashBalance.ils;
+  const portfolioTotalILS = ilsSummary
+    ? ilsSummary.currentValueILS + cashTotalILS
+    : cashTotalILS;
 
   const hasData = transactions.length > 0 || manualStoredTxs.length > 0;
 
@@ -828,6 +876,90 @@ const PortfolioTab: FC = () => {
           {totalPnL >= 0 ? '+' : ''}{fmt(totalPnL)}
           <span className="text-sm font-normal mr-2">({totalPnLPct >= 0 ? '+' : ''}{totalPnLPct.toFixed(1)}%)</span>
         </span>
+      </div>
+
+      {/* Uninvested cash */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-gray-700">💵 מזומן פנוי בחשבון</h3>
+          {portfolioTotalILS > 0 && currentForexRate && (
+            <span className="text-xs text-gray-400">
+              סה"כ תיק (כולל מזומן): <span className="font-semibold text-gray-700">{fmtILS(portfolioTotalILS)}</span>
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-8 flex-wrap">
+          {/* USD cash */}
+          <div>
+            <p className="text-xs text-gray-400 mb-1">דולר (USD)</p>
+            {editingCash?.field === 'usd' ? (
+              <input
+                autoFocus
+                type="number"
+                min="0"
+                value={editingCash.value}
+                onChange={e => setEditingCash({ field: 'usd', value: e.target.value })}
+                onBlur={commitCashEdit}
+                onKeyDown={e => { if (e.key === 'Enter') commitCashEdit(); if (e.key === 'Escape') setEditingCash(null); }}
+                className="w-32 border border-blue-400 rounded px-2 py-1 text-sm font-bold text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
+              />
+            ) : (
+              <p
+                className="text-xl font-bold text-blue-600 cursor-pointer hover:bg-blue-50 rounded px-1 -mx-1 transition-colors"
+                title="לחץ לעריכה"
+                onClick={() => setEditingCash({ field: 'usd', value: String(cashBalance.usd) })}
+              >
+                {fmt(cashBalance.usd, 'USD')}
+                <span className="text-xs font-normal text-gray-400 mr-1">✏️</span>
+              </p>
+            )}
+            {currentForexRate && cashBalance.usd > 0 && (
+              <p className="text-xs text-gray-400 mt-0.5">≈ {fmtILS(cashBalance.usd * currentForexRate)}</p>
+            )}
+          </div>
+
+          <div className="w-px h-10 bg-gray-200" />
+
+          {/* ILS cash */}
+          <div>
+            <p className="text-xs text-gray-400 mb-1">שקל (ILS)</p>
+            {editingCash?.field === 'ils' ? (
+              <input
+                autoFocus
+                type="number"
+                min="0"
+                value={editingCash.value}
+                onChange={e => setEditingCash({ field: 'ils', value: e.target.value })}
+                onBlur={commitCashEdit}
+                onKeyDown={e => { if (e.key === 'Enter') commitCashEdit(); if (e.key === 'Escape') setEditingCash(null); }}
+                className="w-32 border border-blue-400 rounded px-2 py-1 text-sm font-bold text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
+              />
+            ) : (
+              <p
+                className="text-xl font-bold text-blue-600 cursor-pointer hover:bg-blue-50 rounded px-1 -mx-1 transition-colors"
+                title="לחץ לעריכה"
+                onClick={() => setEditingCash({ field: 'ils', value: String(cashBalance.ils) })}
+              >
+                {fmtILS(cashBalance.ils)}
+                <span className="text-xs font-normal text-gray-400 mr-1">✏️</span>
+              </p>
+            )}
+          </div>
+
+          {cashTotalILS > 0 && currentForexRate && (
+            <>
+              <div className="w-px h-10 bg-gray-200" />
+              <div>
+                <p className="text-xs text-gray-400 mb-1">סה"כ מזומן ב-₪</p>
+                <p className="text-xl font-bold text-gray-700">{fmtILS(cashTotalILS)}</p>
+                {cashBalance.usd > 0 && (
+                  <p className="text-xs text-gray-400 mt-0.5">שע"ח: {currentForexRate.toFixed(3)}</p>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+        <p className="text-xs text-gray-300 mt-3">לחץ על סכום לעדכון</p>
       </div>
 
       {/* Charts row */}
