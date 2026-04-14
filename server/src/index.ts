@@ -6,6 +6,8 @@ import geminiRouter from './routes/gemini';
 import classifyRouter from './routes/classify';
 import portfolioRouter from './routes/portfolio';
 import pdfRouter from './routes/pdf';
+import authRouter from './routes/auth';
+import { requireAuth } from './middleware/auth';
 import { initDb } from './db';
 
 dotenv.config();
@@ -20,6 +22,11 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', message: 'Finance Dashboard API is running' });
 });
 
+// Public — no auth required
+app.use('/api/auth', authRouter);
+
+// Protected — all routes below require a valid JWT
+app.use('/api', requireAuth);
 app.use('/api', dataRouter);
 app.use('/api/gemini', geminiRouter);
 app.use('/api/classify', classifyRouter);

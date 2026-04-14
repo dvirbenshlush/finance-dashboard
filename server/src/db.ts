@@ -45,6 +45,13 @@ const pool = new Pool({
 /** Run once on startup — creates tables if they don't exist yet. */
 export async function initDb(): Promise<void> {
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id            SERIAL      PRIMARY KEY,
+      email         TEXT        NOT NULL UNIQUE,
+      password_hash TEXT        NOT NULL,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS bank_transactions (
       id          TEXT    PRIMARY KEY,
       date        TEXT    NOT NULL,

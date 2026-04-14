@@ -3,10 +3,21 @@ import type { Transaction, Portfolio, GeminiInsight, TransactionCategory, StockT
 const BASE = 'http://localhost:3001/api';
 
 const request = async <T>(path: string, options?: RequestInit): Promise<T> => {
+  const token = localStorage.getItem('otzar_token');
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     ...options,
   });
+  if (res.status === 401) {
+    // Token expired or invalid — clear it so the app shows the login screen
+    localStorage.removeItem('otzar_token');
+    localStorage.removeItem('otzar_email');
+    window.location.reload();
+    throw new Error('פג תוקף החיבור — יש להתחבר מחדש');
+  }
   if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
   return res.json() as Promise<T>;
 };

@@ -7,8 +7,10 @@ import LoansTab from './components/loans/LoansTab';
 import SavingsTab from './components/savings/SavingsTab';
 import CalendarTab from './components/calendar/CalendarTab';
 import DealTab from './components/deal/DealTab';
+import AuthPage from './components/auth/AuthPage';
 import type { Transaction, TransactionCategory, Portfolio } from './types';
 import { api } from './services/api';
+import { authService } from './services/authService';
 
 type DateRange = 'week' | 'month' | 'year' | 'all' | 'custom';
 
@@ -59,7 +61,9 @@ function loadCachedPortfolio(): Portfolio {
   } catch { return EMPTY_PORTFOLIO; }
 }
 
-function App() {
+// ─── Main dashboard (only rendered when authenticated) ────────────────────────
+
+function Dashboard({ userEmail, onLogout }: { userEmail: string; onLogout: () => void }) {
   const [activeTab, setActiveTab] = useState<TabId>('cashflow' as TabId);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [portfolio, setPortfolio] = useState<Portfolio>(() => loadCachedPortfolio());
@@ -213,7 +217,7 @@ function App() {
       {/* Header */}
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-gray-900">🚀 Otzar — מרכז הפיקוד הפיננסי</h1>
+          <h1 className="text-xl font-bold text-gray-900">🏦 Otzar — מרכז הפיקוד הפיננסי</h1>
           <p className="text-sm text-gray-500 mt-0.5">ניהול נכסים, תזרים והלוואות — הכל במקום אחד</p>
         </div>
         <div className="flex items-center gap-4">
@@ -243,6 +247,17 @@ function App() {
             </p>
             <p>{filteredTransactions.length} תנועות ({debitCount} הוצאות){dateRange !== 'all' ? ` · ${DATE_RANGE_OPTIONS.find(o => o.id === dateRange)?.label}` : ''}</p>
             <p>שווי נקי: ₪{portfolio.netWorthILS.toLocaleString()}</p>
+          </div>
+          {/* User + logout */}
+          <div className="flex items-center gap-2 border-r border-gray-200 pr-4 mr-0">
+            <span className="text-xs text-gray-500 hidden sm:block">{userEmail}</span>
+            <button
+              onClick={onLogout}
+              className="text-xs text-gray-400 hover:text-red-500 transition-colors border border-gray-200 hover:border-red-300 rounded px-2 py-1"
+              title="התנתק"
+            >
+              התנתק
+            </button>
           </div>
         </div>
       </header>
@@ -357,6 +372,27 @@ function App() {
       </main>
     </div>
   );
+}
+
+// ─── Root — auth gate ─────────────────────────────────────────────────────────
+
+function App() {
+  const [authed, setAuthed]       = useState(() => authService.isLoggedIn());
+  const [userEmail, setUserEmail] = useState(() => authService.getEmail() ?? '');
+
+  const handleAuth = (email: string) => {
+    setUserEmail(email);
+    setAuthed(true);
+  };
+
+  const handleLogout = () => {
+    authService.logout();
+    setAuthed(false);
+    setUserEmail('');
+  };
+
+  if (!authed) return <AuthPage onAuth={handleAuth} />;
+  return <Dashboard userEmail={userEmail} onLogout={handleLogout} />;
 }
 
 export default App;
