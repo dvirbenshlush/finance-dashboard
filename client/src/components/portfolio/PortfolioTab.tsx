@@ -470,12 +470,13 @@ const PortfolioTab: FC = () => {
       .finally(() => setLoadingStored(false));
   }, []);
 
-  // Fetch USD/ILS historical rates whenever any transactions change
+  // Fetch USD/ILS historical rates whenever any transactions change.
+  // Falls back to just today's date when there are no transactions (needed for cash-only forex conversion).
   useEffect(() => {
     const allDates = [...transactions, ...manualStoredTxs].map(t => t.date).sort();
-    if (allDates.length === 0) return;
-    const from = allDates[0];
-    const to   = new Date().toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, 10);
+    const from = allDates[0] ?? today;
+    const to   = today;
     setForexLoading(true);
     authFetch(`${BASE}/portfolio/forex-rates?from=${from}&to=${to}`)
       .then(r => r.json())
@@ -531,7 +532,7 @@ const PortfolioTab: FC = () => {
 
   const totals = useMemo(() => aggregateTotals(enrichedPositions), [enrichedPositions]);
 
-  // ILS summary — converts every transaction (file + manual) to shekels
+  // ILS summary — converts every transaction (file + manual) to shekels, then adds uninvested cash
   const ilsSummary = useMemo(() => {
     if (Object.keys(forexRates).length === 0) return null;
     let investedILS = 0, proceedsILS = 0, dividendsILS = 0, feesILS = 0;
@@ -544,13 +545,15 @@ const PortfolioTab: FC = () => {
       else if (tx.action === 'dividend') dividendsILS  += amtILS;
       else if (tx.action === 'fee')      feesILS       += amtILS;
     }
-    const today      = new Date().toISOString().slice(0, 10);
+    const today       = new Date().toISOString().slice(0, 10);
     const currentRate = getRateForDate(today) ?? 0;
-    const currentValueILS = totals.totalCurrentValue * currentRate;
-    const totalReturnILS = currentValueILS + proceedsILS + dividendsILS - feesILS - investedILS;
-    return { investedILS, proceedsILS, dividendsILS, feesILS, currentValueILS, currentRate, totalReturnILS };
+    // Stock portfolio value in ILS + uninvested cash in ILS
+    const cashILS         = cashBalance.ils + cashBalance.usd * currentRate;
+    const currentValueILS = totals.totalCurrentValue * currentRate + cashILS;
+    const totalReturnILS  = currentValueILS + proceedsILS + dividendsILS - feesILS - investedILS;
+    return { investedILS, proceedsILS, dividendsILS, feesILS, currentValueILS, currentRate, totalReturnILS, cashILS };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [forexRates, transactions, manualStoredTxs, totals.totalCurrentValue]);
+  }, [forexRates, transactions, manualStoredTxs, totals.totalCurrentValue, cashBalance]);
 
   // Fetch live quotes whenever held symbols change
   useEffect(() => {
@@ -832,9 +835,13 @@ const PortfolioTab: FC = () => {
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        <KpiCard label="עלות השקעה כוללת" value={fmt(totals.totalBought)}     color="text-blue-600" />
-        <KpiCard label="שווי תיק כיום"    value={fmt(totals.totalCurrentValue)} color="text-indigo-600"
-          sub={quotes.length > 0 ? 'לפי שערים עדכניים' : 'לפי עלות (ממתין לשערים)'} />
+        <KpiCard label="עלות השקעה כוללת" value={fmt(totals.totalBought)} color="text-blue-600" />
+        <KpiCard
+          label="שווי תיק כיום"
+          value={fmt(totals.totalCurrentValue + cashBalance.usd + (currentForexRate && currentForexRate > 0 ? cashBalance.ils / currentForexRate : 0))}
+          color="text-indigo-600"
+          sub={quotes.length > 0 ? 'לפי שערים עדכניים' : 'לפי עלות (ממתין לשערים)'}
+        />
         <KpiCard
           label="רווח לא ממומש"
           value={fmt(totals.totalUnrealized)}
@@ -1477,7 +1484,8 @@ const PortfolioTab: FC = () => {
             <KpiCard label="סה״כ הושקע ₪"     value={fmtILS(ilsSummary.investedILS)}     color="text-blue-600" />
             <KpiCard label="סה״כ מומש ₪"       value={fmtILS(ilsSummary.proceedsILS)}     color="text-green-600" />
             <KpiCard label="דיבידנדים ₪"        value={fmtILS(ilsSummary.dividendsILS)}    color="text-yellow-600" />
-            <KpiCard label="שווי תיק כיום ₪"   value={fmtILS(ilsSummary.currentValueILS)} color="text-indigo-600" />
+            <KpiCard label="שווי תיק כיום ₪"   value={fmtILS(ilsSummary.currentValueILS)} color="text-indigo-600"
+              sub={ilsSummary.cashILS > 0 ? `כולל ${fmtILS(ilsSummary.cashILS)} מזומן` : undefined} />
             <KpiCard
               label="רווח / הפסד כולל ₪"
               value={`${ilsSummary.totalReturnILS >= 0 ? '+' : ''}${fmtILS(ilsSummary.totalReturnILS)}`}
