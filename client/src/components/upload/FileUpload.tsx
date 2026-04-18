@@ -108,7 +108,7 @@ const parseRows = (
         isDebit,
       };
     })
-    .filter((tx): tx is Transaction => tx !== null && tx.amount > 0);
+    .filter((tx): tx is NonNullable<typeof tx> => tx !== null && tx.amount > 0) as Transaction[];
 };
 
 interface ParseResult {

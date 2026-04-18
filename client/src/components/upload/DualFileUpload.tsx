@@ -117,7 +117,7 @@ const parseRows = (rows: Record<string, unknown>[], source: BankSource): Transac
       source: txSource, bankName: source, isDebit,
       category: undefined, // AI will categorize everything
     };
-  }).filter((tx): tx is Transaction => tx !== null && tx.amount > 0);
+  }).filter((tx): tx is NonNullable<typeof tx> => tx !== null && tx.amount > 0) as Transaction[];
 
 /**
  * Remove credit-card payment rows from bank account transactions to avoid double-counting.
