@@ -243,7 +243,10 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigat
   // Mortgage track editing
   const [editingTrack, setEditingTrack] = useState<{ loanId: string; track: MortgageTrack } | null>(null);
   const [addingTrackFor, setAddingTrackFor] = useState<string | null>(null); // loanId
-  const [trackDraft, setTrackDraft] = useState<Partial<MortgageTrack & { monthlyPayment: string; outstanding: string; interestRate: string }>>({});
+  type TrackDraft = Omit<Partial<MortgageTrack>, 'interestRate' | 'outstanding' | 'monthlyPayment' | 'monthsRemaining'> & {
+    interestRate?: string; outstanding?: string; monthlyPayment?: string; monthsRemaining?: string;
+  };
+  const [trackDraft, setTrackDraft] = useState<TrackDraft>({});
 
   // ── Asset helpers ──────────────────────────────────────────────────────────
   const NUM_FIELDS: (keyof Asset)[] = ['value','units','pricePerUnit','avgBuyPrice','purchasePrice','monthlyRentalIncome'];
@@ -1144,7 +1147,7 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigat
                                           <td className="py-1.5 pr-2 tabular-nums text-gray-500">{track.monthsRemaining} חודשים</td>
                                           <td className="py-1.5">
                                             <div className="opacity-0 group-hover:opacity-100 flex gap-1">
-                                              <button onClick={() => { setEditingTrack({ loanId: loan.id, track }); setTrackDraft({ ...track, outstanding: String(track.outstanding), interestRate: String(track.interestRate), monthlyPayment: String(track.monthlyPayment) }); setAddingTrackFor(null); }}
+                                              <button onClick={() => { setEditingTrack({ loanId: loan.id, track }); setTrackDraft({ ...track, outstanding: String(track.outstanding ?? ''), interestRate: String(track.interestRate ?? ''), monthlyPayment: String(track.monthlyPayment ?? ''), monthsRemaining: String(track.monthsRemaining ?? '') }); setAddingTrackFor(null); }}
                                                 className="text-blue-400 hover:text-blue-600 text-xs">✏️</button>
                                               <button onClick={() => deleteTrack(loan.id, track.id)} className="text-gray-300 hover:text-red-500 text-xs">🗑</button>
                                             </div>
