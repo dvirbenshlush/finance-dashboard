@@ -28,6 +28,9 @@
 import dotenv from 'dotenv';
 dotenv.config();   // load .env before anything reads process.env
 
+import dns from 'dns';
+dns.setDefaultResultOrder('ipv4first'); // force IPv4 — Render free tier can't reach Supabase over IPv6
+
 import { Pool } from 'pg';
 
 if (!process.env.DATABASE_URL) {
@@ -37,7 +40,7 @@ if (!process.env.DATABASE_URL) {
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL.includes('supabase.co')
+  ssl: (process.env.DATABASE_URL.includes('supabase.co') || process.env.DATABASE_URL.includes('supabase.com'))
     ? { rejectUnauthorized: false }
     : false,
 });
