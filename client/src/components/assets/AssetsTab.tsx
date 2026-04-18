@@ -497,6 +497,7 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigat
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                     <NF label={`שווי נוכחי (${sym})`}     value={asset.value}                    onChange={v => updateAsset(asset.id, 'value', v)} />
                     <NF label={`מחיר רכישה (${sym})`}     value={asset.purchasePrice ?? 0}       onChange={v => updateAsset(asset.id, 'purchasePrice', v)} />
+                    <NF label="שנת רכישה"                  value={asset.purchaseYear ?? new Date().getFullYear()} step="1" onChange={v => updateAsset(asset.id, 'purchaseYear', v)} />
                     <NF label={`שכירות חודשית (${sym})`}  value={asset.monthlyRentalIncome ?? 0} onChange={v => updateAsset(asset.id, 'monthlyRentalIncome', v)} step="100" />
                     <KPI label="הכנסה נטו שנתית (שכ&quot;ד − עלויות − משכנתא)"
                       value={`${fc.annualNetILS >= 0 ? '+' : ''}${fILS(fc.annualNetILS)}`}
@@ -507,6 +508,7 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigat
 
                   {/* Investment summary KPIs */}
                   {(() => {
+                    const currentYear      = new Date().getFullYear();
                     const purchasePriceILS = asset.currency === 'USD' ? (asset.purchasePrice ?? asset.value) * USD_TO_ILS : (asset.purchasePrice ?? asset.value);
                     const currentValueILS  = fc.valueILS;
                     const loanPrincipalILS   = linkedLoans.reduce((s, l) => s + loanToILS(l.principal,   l.currency), 0);
@@ -514,8 +516,17 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigat
                     const investedEquity  = purchasePriceILS - loanPrincipalILS;
                     const projectedValue  = currentValueILS * Math.pow(1 + (settings.appreciationRate ?? 3) / 100, dealHoldingYears);
                     const projectedEquity = projectedValue - loanOutstandingILS;
+
+                    // Time-based: appreciation from purchase year to today
+                    const pyear       = asset.purchaseYear;
+                    const yearsHeld   = pyear ? Math.max(0, currentYear - pyear) : null;
+                    const appreciated = yearsHeld !== null
+                      ? purchasePriceILS * Math.pow(1 + (settings.appreciationRate ?? 3) / 100, yearsHeld)
+                      : null;
+                    const equityToday = appreciated !== null ? appreciated - loanOutstandingILS : null;
+
                     return (
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 pt-1">
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-1">
                         <KPI
                           label="הון עצמי שהושקע"
                           value={fILS(investedEquity)}
@@ -523,6 +534,15 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigat
                           color="text-blue-700"
                           bg="bg-blue-50"
                         />
+                        {equityToday !== null && (
+                          <KPI
+                            label={`הון עצמי כיום (${yearsHeld} שנים, ${settings.appreciationRate ?? 3}%)`}
+                            value={fILS(equityToday)}
+                            sub={appreciated ? `שווי משוער ${fILS(appreciated)} · +${fILS(appreciated - purchasePriceILS)}` : undefined}
+                            color={equityToday >= investedEquity ? 'text-emerald-700' : 'text-red-600'}
+                            bg={equityToday >= investedEquity ? 'bg-emerald-50' : 'bg-red-50'}
+                          />
+                        )}
                         <KPI
                           label={`שווי בעוד ${dealHoldingYears} שנה (${settings.appreciationRate ?? 3}%)`}
                           value={fILS(projectedValue)}

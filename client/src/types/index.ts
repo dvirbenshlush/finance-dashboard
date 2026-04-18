@@ -50,6 +50,7 @@ export interface Asset {
   propertyType?: 'apartment' | 'house' | 'commercial';
   monthlyRentalIncome?: number;
   purchasePrice?: number;
+  purchaseYear?: number;
   ticker?: string;
   units?: number;
   pricePerUnit?: number;

@@ -1,4 +1,4 @@
-import { type FC, useState, useMemo, type ReactNode } from 'react';
+import React, { type FC, useState, useMemo, useRef, type ReactNode } from 'react';
 import type { Portfolio, MortgageTrack } from '../../types';
 
 // ── Formatters ────────────────────────────────────────────────────────────────
@@ -43,6 +43,9 @@ interface DealInputs {
   includeCapitalGains: boolean;
   showEquityCalc: boolean;
 
+  // Purchase date
+  purchaseYear: number;
+
   // Mortgage mix
   mortgageTracks: MortgageTrack[];
 }
@@ -81,6 +84,7 @@ const DEFAULT: DealInputs = {
   includeCapitalGains: true,
   showEquityCalc: true,
   mortgageTracks: [],
+  purchaseYear: new Date().getFullYear(),
 };
 
 function loadDeal(): DealInputs {
@@ -248,6 +252,42 @@ const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange, focusAssetId 
     interestRate: string; monthsTotal: string; monthlyPayment: string;
   }>({ name: '', trackType: 'fixed', principal: '', outstanding: '', interestRate: '', monthsTotal: '', monthlyPayment: '' });
 
+  // When navigated from an asset card, seed deal inputs from the asset
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const seedFromAsset = (assetId: string) => {
+    const asset = portfolio.assets.find(a => a.id === assetId);
+    if (!asset) return;
+    const linkedLoan = portfolio.loans.find(l => l.linkedAssetId === assetId);
+    const toILS = (v: number) => asset.currency === 'USD' ? v * USD_TO_ILS : v;
+    const price = toILS(asset.purchasePrice ?? asset.value);
+    const loanPrincipal = linkedLoan
+      ? (linkedLoan.currency === 'USD' ? linkedLoan.principal * USD_TO_ILS : linkedLoan.principal)
+      : 0;
+    setDRaw(prev => {
+      const next: DealInputs = {
+        ...prev,
+        purchasePrice: Math.round(price),
+        equity: Math.round(Math.max(0, price - loanPrincipal)),
+        monthlyRent: asset.monthlyRentalIncome ?? prev.monthlyRent,
+        purchaseYear: asset.purchaseYear ?? prev.purchaseYear,
+        ...(linkedLoan ? {
+          interestRate: linkedLoan.interestRate,
+          loanTermYears: linkedLoan.termMonths ? Math.round(linkedLoan.termMonths / 12) : prev.loanTermYears,
+          ...(linkedLoan.tracks?.length ? { mortgageTracks: linkedLoan.tracks } : {}),
+        } : {}),
+      };
+      localStorage.setItem(LS_DEAL, JSON.stringify(next));
+      return next;
+    });
+  };
+
+  // Seed when focusAssetId first appears
+  const prevFocusRef = useRef<string | null | undefined>(undefined);
+  if (focusAssetId && focusAssetId !== prevFocusRef.current) {
+    prevFocusRef.current = focusAssetId;
+    seedFromAsset(focusAssetId);
+  }
+
   const set = (patch: Partial<DealInputs>) => {
     setDRaw(prev => {
       const next = { ...prev, ...patch };
@@ -279,6 +319,7 @@ const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange, focusAssetId 
         value: d.purchasePrice,
         purchasePrice: d.purchasePrice,
         monthlyRentalIncome: d.monthlyRent,
+        purchaseYear: d.purchaseYear,
       };
       const existingLoan = portfolio.loans.find(l => l.linkedAssetId === focusAssetId);
       let updatedLoans = portfolio.loans;
@@ -341,6 +382,7 @@ const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange, focusAssetId 
       currency: 'ILS' as const,
       purchasePrice: d.purchasePrice,
       monthlyRentalIncome: d.monthlyRent,
+      purchaseYear: d.purchaseYear,
     };
     const newLoan = loanAmount > 0 ? {
       id: `deal-loan-${Date.now() + 1}`,
@@ -635,6 +677,9 @@ const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange, focusAssetId 
                     suffix="%" onChange={v => set({ annualAppreciationPct: v })} />
                   <NF label="שנות אחזקה" value={d.holdingYears} step="1"
                     suffix="שנה" hint="לחישוב שבח" onChange={v => set({ holdingYears: v })} />
+                  <NF label="שנת רכישה" value={d.purchaseYear} step="1"
+                    hint={`${new Date().getFullYear() - d.purchaseYear} שנים שהוחזק`}
+                    onChange={v => set({ purchaseYear: Math.round(v) })} />
                   <NF label="מחיר מכירה משוער (₪)" value={Math.round(c.salePrice)}
                     onChange={() => {}} readOnly hint="מחושב" />
                   <NF label="תיווך ביציאה" value={d.agentPct} step="0.5"
