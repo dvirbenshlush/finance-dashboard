@@ -17,7 +17,7 @@ const fmt = (v: number) =>
   new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 0 }).format(v);
 
 const LS_GOAL = 'otzar_monthly_goal';
-const LS_CASH = 'otzar_cash_balance';
+const LS_CASH = 'otzar_bank_balance'; // ILS bank account balance — distinct from PortfolioTab's otzar_cash_balance
 
 // Category buckets
 const INCOME_CATS = new Set(['salary', 'rental_income', 'refund', 'transfer_in']);
@@ -170,9 +170,18 @@ const CashflowTab: FC<CashflowTabProps> = ({
   const [monthlyGoal, setMonthlyGoal] = useState<number>(
     () => parseFloat(localStorage.getItem(LS_GOAL) ?? '0') || 0
   );
-  const [cashBalance, setCashBalance] = useState<number>(
-    () => parseFloat(localStorage.getItem(LS_CASH) ?? '0') || 0
-  );
+  const [cashBalance, setCashBalance] = useState<number>(() => {
+    // Migrate from old key (otzar_cash_balance stored a plain number; migrate once)
+    const newVal = localStorage.getItem(LS_CASH);
+    if (newVal !== null) return parseFloat(newVal) || 0;
+    const oldRaw = localStorage.getItem('otzar_cash_balance');
+    if (oldRaw !== null) {
+      const n = parseFloat(oldRaw) || 0; // plain number only — ignore JSON objects
+      if (!isNaN(n) && n > 0) { localStorage.setItem(LS_CASH, String(n)); }
+      return n;
+    }
+    return 0;
+  });
   const [goalInput, setGoalInput] = useState(monthlyGoal > 0 ? String(monthlyGoal) : '');
   const [cashInput, setCashInput] = useState(cashBalance > 0 ? String(cashBalance) : '');
 

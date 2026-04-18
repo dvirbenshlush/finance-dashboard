@@ -44,6 +44,12 @@ interface HomeTabProps {
 // ── Main component ─────────────────────────────────────────────────────────────
 const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate }) => {
 
+  // Bank account balance entered manually in the cashflow tab
+  const bankBalanceILS = useMemo(() => {
+    const raw = localStorage.getItem('otzar_bank_balance');
+    return raw ? parseFloat(raw) || 0 : 0;
+  }, []);
+
   const summary = useMemo(() => {
     const realEstateAssets = portfolio.assets.filter(a => a.type === 'real_estate');
     const savingsAssets    = portfolio.assets.filter(a => a.type === 'savings');
@@ -63,10 +69,10 @@ const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate })
     );
 
     // Total gross assets (everything we own)
-    const totalAssetsILS = realEstateValueILS + savingsValueILS + stockPortfolioILS;
+    const totalAssetsILS = realEstateValueILS + savingsValueILS + stockPortfolioILS + bankBalanceILS;
 
     // Net worth = assets minus liabilities
-    const netWorthILS = realEstateEquityILS + savingsValueILS + stockPortfolioILS;
+    const netWorthILS = realEstateEquityILS + savingsValueILS + stockPortfolioILS + bankBalanceILS;
 
     // LTV across all real estate
     const ltvPct = realEstateValueILS > 0
@@ -82,7 +88,7 @@ const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate })
       netWorthILS,
       ltvPct,
     };
-  }, [portfolio, stockPortfolioILS]);
+  }, [portfolio, stockPortfolioILS, bankBalanceILS]);
 
   const hasStockData = stockPortfolioILS > 0;
 
@@ -136,6 +142,7 @@ const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate })
             summary.realEstateValueILS > 0 ? `נדל"ן ${fILS(summary.realEstateValueILS)}` : null,
             stockPortfolioILS > 0          ? `שוק ההון ${fILS(stockPortfolioILS)}`       : null,
             summary.savingsValueILS > 0    ? `חסכונות ${fILS(summary.savingsValueILS)}`  : null,
+            bankBalanceILS > 0             ? `עו"ש ${fILS(bankBalanceILS)}`              : null,
           ].filter(Boolean).join(' · ')}
           color="text-gray-900"
           bg="bg-gray-50"
@@ -197,6 +204,24 @@ const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate })
                   {fILS(summary.savingsValueILS)}
                   <span className="text-gray-400 font-normal mr-1">
                     ({summary.totalAssetsILS > 0 ? ((summary.savingsValueILS / summary.totalAssetsILS) * 100).toFixed(0) : 0}%)
+                  </span>
+                </span>
+              </div>
+            )}
+
+            {bankBalanceILS > 0 && (
+              <div className="flex items-center gap-3">
+                <span className="w-24 text-xs text-gray-500 shrink-0">עו"ש</span>
+                <div className="flex-1 bg-gray-100 rounded-full h-3 overflow-hidden">
+                  <div
+                    className="bg-teal-500 h-full rounded-full"
+                    style={{ width: `${summary.totalAssetsILS > 0 ? (bankBalanceILS / summary.totalAssetsILS) * 100 : 0}%` }}
+                  />
+                </div>
+                <span className="text-xs font-semibold text-gray-700 w-28 text-left shrink-0">
+                  {fILS(bankBalanceILS)}
+                  <span className="text-gray-400 font-normal mr-1">
+                    ({summary.totalAssetsILS > 0 ? ((bankBalanceILS / summary.totalAssetsILS) * 100).toFixed(0) : 0}%)
                   </span>
                 </span>
               </div>
