@@ -268,6 +268,69 @@ const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange, focusAssetId 
     set({ extraExpenses: d.extraExpenses.filter(e => e.id !== id) });
 
   const saveToPortfolio = () => {
+    const loanAmount = Math.max(0, d.purchasePrice - d.equity);
+
+    // ── Update existing asset (navigated from AssetsTab) ──
+    if (focusAssetId) {
+      const existingAsset = portfolio.assets.find(a => a.id === focusAssetId);
+      if (!existingAsset) return;
+      const updatedAsset = {
+        ...existingAsset,
+        value: d.purchasePrice,
+        purchasePrice: d.purchasePrice,
+        monthlyRentalIncome: d.monthlyRent,
+      };
+      const existingLoan = portfolio.loans.find(l => l.linkedAssetId === focusAssetId);
+      let updatedLoans = portfolio.loans;
+      if (loanAmount > 0) {
+        const loanPatch = {
+          principal: loanAmount,
+          outstanding: d.mortgageTracks.length > 0
+            ? d.mortgageTracks.reduce((s, t) => s + t.outstanding, 0)
+            : loanAmount,
+          interestRate: d.interestRate,
+          monthlyPayment: c.monthly,
+          termMonths: d.loanTermYears * 12,
+          ...(d.mortgageTracks.length > 0 ? { tracks: d.mortgageTracks } : {}),
+        };
+        if (existingLoan) {
+          updatedLoans = portfolio.loans.map(l =>
+            l.id === existingLoan.id ? { ...l, ...loanPatch } : l
+          );
+        } else {
+          updatedLoans = [...portfolio.loans, {
+            id: `deal-loan-${Date.now()}`,
+            name: `משכנתא — ${existingAsset.name}`,
+            type: 'mortgage' as const,
+            currency: 'ILS' as const,
+            linkedAssetId: focusAssetId,
+            ...loanPatch,
+          }];
+        }
+      }
+      const updatedPortfolio: Portfolio = {
+        ...portfolio,
+        assets: portfolio.assets.map(a => a.id === focusAssetId ? updatedAsset : a),
+        loans: updatedLoans,
+      };
+      // Recompute totals
+      const totalAssets = updatedPortfolio.assets
+        .filter(a => a.type !== 'savings')
+        .reduce((s, a) => s + (a.currency === 'USD' ? a.value * USD_TO_ILS : a.value), 0);
+      const totalLiabilities = updatedPortfolio.loans
+        .reduce((s, l) => s + (l.currency === 'USD' ? l.outstanding * USD_TO_ILS : l.outstanding), 0);
+      onPortfolioChange({
+        ...updatedPortfolio,
+        totalAssetsILS: totalAssets,
+        totalLiabilitiesILS: totalLiabilities,
+        netWorthILS: totalAssets - totalLiabilities,
+      });
+      setSaveMsg(`✅ "${existingAsset.name}" עודכן בתיק הנכסים`);
+      setTimeout(() => setSaveMsg(null), 4000);
+      return;
+    }
+
+    // ── Add new asset ──
     const name = dealName.trim() || `נכס ${fILS(d.purchasePrice)}`;
     const assetId = `deal-asset-${Date.now()}`;
     const newAsset = {
@@ -279,7 +342,6 @@ const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange, focusAssetId 
       purchasePrice: d.purchasePrice,
       monthlyRentalIncome: d.monthlyRent,
     };
-    const loanAmount = Math.max(0, d.purchasePrice - d.equity);
     const newLoan = loanAmount > 0 ? {
       id: `deal-loan-${Date.now() + 1}`,
       name: `משכנתא — ${name}`,

@@ -197,6 +197,16 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigat
   const [allDocs,      setAllDocs]      = useState<Record<string, PropertyDoc[]>> (() => loadLS(LS_DOCS,      {}));
   const [propSettings, setPropSettings] = useState<Record<string, PropSettings>>  (() => loadLS(LS_PROP_SETS, {}));
 
+  // Load holding years from DealTab settings for projection KPIs
+  const dealHoldingYears = useMemo(() => {
+    try {
+      const raw = localStorage.getItem('otzar_deal_calc');
+      if (!raw) return 10;
+      const parsed = JSON.parse(raw) as { holdingYears?: number };
+      return parsed.holdingYears ?? 10;
+    } catch { return 10; }
+  }, []);
+
   // UI state
   const [expandedId,    setExpandedId]    = useState<string | null>(null);
   const [expandSection, setExpandSection] = useState<Record<string, 'costs' | 'mortgage' | null>>({});
@@ -494,6 +504,42 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigat
                       color={fc.annualNetILS >= 0 ? 'text-green-700' : 'text-red-600'}
                       bg={fc.annualNetILS >= 0 ? 'bg-green-50' : 'bg-red-50'} />
                   </div>
+
+                  {/* Investment summary KPIs */}
+                  {(() => {
+                    const purchasePriceILS = asset.currency === 'USD' ? (asset.purchasePrice ?? asset.value) * USD_TO_ILS : (asset.purchasePrice ?? asset.value);
+                    const currentValueILS  = fc.valueILS;
+                    const loanPrincipalILS   = linkedLoans.reduce((s, l) => s + loanToILS(l.principal,   l.currency), 0);
+                    const loanOutstandingILS = linkedLoans.reduce((s, l) => s + loanToILS(l.outstanding, l.currency), 0);
+                    const investedEquity  = purchasePriceILS - loanPrincipalILS;
+                    const projectedValue  = currentValueILS * Math.pow(1 + (settings.appreciationRate ?? 3) / 100, dealHoldingYears);
+                    const projectedEquity = projectedValue - loanOutstandingILS;
+                    return (
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 pt-1">
+                        <KPI
+                          label="הון עצמי שהושקע"
+                          value={fILS(investedEquity)}
+                          sub={`מחיר רכישה${loanPrincipalILS > 0 ? ` פחות הלוואה (${fILS(loanPrincipalILS)})` : ''}`}
+                          color="text-blue-700"
+                          bg="bg-blue-50"
+                        />
+                        <KPI
+                          label={`שווי בעוד ${dealHoldingYears} שנה (${settings.appreciationRate ?? 3}%)`}
+                          value={fILS(projectedValue)}
+                          sub={`+${fILS(projectedValue - currentValueILS)} עליית ערך`}
+                          color="text-indigo-700"
+                          bg="bg-indigo-50"
+                        />
+                        <KPI
+                          label={`הון עצמי בעוד ${dealHoldingYears} שנה`}
+                          value={fILS(projectedEquity)}
+                          sub={`צפי מכירה פחות${loanOutstandingILS > 0 ? ` יתרת הלוואה (${fILS(loanOutstandingILS)})` : ' חוב'}`}
+                          color={projectedEquity >= investedEquity ? 'text-green-700' : 'text-red-600'}
+                          bg={projectedEquity >= investedEquity ? 'bg-green-50' : 'bg-red-50'}
+                        />
+                      </div>
+                    );
+                  })()}
 
                   {/* Forecast settings */}
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2 border-t border-gray-100">
