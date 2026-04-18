@@ -966,7 +966,7 @@ const PortfolioTab: FC<PortfolioTabProps> = ({ onValueUpdate }) => {
                 <Pie data={allocationData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={90} label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}>
                   {allocationData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
                 </Pie>
-                <Tooltip formatter={(v: number) => fmt(v)} />
+                <Tooltip formatter={(v) => fmt(v as number)} />
               </PieChart>
             </ResponsiveContainer>
           </div>
@@ -981,7 +981,7 @@ const PortfolioTab: FC<PortfolioTabProps> = ({ onValueUpdate }) => {
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis type="number" tickFormatter={v => `$${(v/1000).toFixed(0)}k`} tick={{ fontSize: 10 }} />
                 <YAxis type="category" dataKey="symbol" tick={{ fontSize: 11 }} width={50} />
-                <Tooltip formatter={(v: number) => fmt(v)} />
+                <Tooltip formatter={(v) => fmt(v as number)} />
                 <Legend />
                 <Bar dataKey="unrealized" name="לא ממומש" fill="#3b82f6" radius={[0,4,4,0]} />
                 <Bar dataKey="realized"   name="ממומש"    fill="#10b981" radius={[0,4,4,0]} />
@@ -999,7 +999,7 @@ const PortfolioTab: FC<PortfolioTabProps> = ({ onValueUpdate }) => {
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="month" tick={{ fontSize: 10 }} />
                 <YAxis tickFormatter={v => `$${(v/1000).toFixed(0)}k`} tick={{ fontSize: 10 }} />
-                <Tooltip formatter={(v: number) => fmt(v)} />
+                <Tooltip formatter={(v) => fmt(v as number)} />
                 <Legend />
                 <Bar dataKey="bought"    name="קניות"      fill="#3b82f6" radius={[4,4,0,0]} />
                 <Bar dataKey="sold"      name="מכירות"     fill="#10b981" radius={[4,4,0,0]} />

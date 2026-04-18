@@ -1,5 +1,5 @@
 import { type FC, useState } from 'react';
-import type { Asset, Portfolio } from '../../types';
+import type { Portfolio } from '../../types';
 
 const fILS = (v: number) =>
   new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 0 }).format(v);
