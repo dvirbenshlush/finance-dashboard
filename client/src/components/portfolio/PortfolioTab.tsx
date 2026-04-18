@@ -194,6 +194,8 @@ function aggregateTotals(all: Position[]) {
 const LS_MANUAL_TXS = 'otzar_manual_txs';
 /** Legacy key — kept only for one-time migration on first load. */
 const LS_MANUAL_LEGACY = 'otzar_manual_positions';
+/** Cache of server-uploaded transactions — so data survives refresh even if server is temporarily unavailable. */
+const LS_SERVER_TXS = 'otzar_server_txs';
 
 interface LegacyManualPosition {
   id: string; symbol: string; name?: string;
@@ -270,7 +272,10 @@ interface PortfolioTabProps {
 
 const PortfolioTab: FC<PortfolioTabProps> = ({ onValueUpdate }) => {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [transactions, setTransactions] = useState<StockTransaction[]>([]);
+  const [transactions, setTransactions] = useState<StockTransaction[]>(() => {
+    try { const r = localStorage.getItem(LS_SERVER_TXS); return r ? JSON.parse(r) as StockTransaction[] : []; }
+    catch { return []; }
+  });
   const [loadingStored, setLoadingStored] = useState(true);
   const [uploading, setUploading]       = useState(false);
   const [uploadError, setUploadError]   = useState<string | null>(null);
@@ -466,11 +471,16 @@ const PortfolioTab: FC<PortfolioTabProps> = ({ onValueUpdate }) => {
     return best ? forexRates[best] : null;
   };
 
-  // Load persisted stock transactions from server on mount
+  // Load persisted stock transactions from server on mount; update local cache on success
   useEffect(() => {
     api.getStockTransactions()
-      .then(saved => { if (saved.length > 0) setTransactions(saved); })
-      .catch(() => {/* offline — start empty */})
+      .then(saved => {
+        if (saved.length > 0) {
+          setTransactions(saved);
+          localStorage.setItem(LS_SERVER_TXS, JSON.stringify(saved));
+        }
+      })
+      .catch(() => {/* offline — local cache already loaded from useState init */})
       .finally(() => setLoadingStored(false));
   }, []);
 
@@ -597,6 +607,7 @@ const PortfolioTab: FC<PortfolioTabProps> = ({ onValueUpdate }) => {
       // Reload full merged set from server as source of truth
       const all = await api.getStockTransactions();
       setTransactions(all);
+      localStorage.setItem(LS_SERVER_TXS, JSON.stringify(all));
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -802,6 +813,7 @@ const PortfolioTab: FC<PortfolioTabProps> = ({ onValueUpdate }) => {
             onClick={() => {
               api.clearStockTransactions().catch(() => {});
               setTransactions([]); setAnalysis(null); setFileName(null);
+              localStorage.removeItem(LS_SERVER_TXS);
               saveManualTxs([]);
               setPositionOverrides({});
               localStorage.removeItem(LS_OVERRIDES);
