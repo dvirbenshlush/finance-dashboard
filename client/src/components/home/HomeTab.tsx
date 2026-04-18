@@ -179,140 +179,84 @@ const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate })
         />
       </div>
 
-      {/* ── Breakdown row ── */}
-      {(summary.realEstateValueILS > 0 || hasStockData || summary.savingsValueILS > 0) && (
-        <div className="bg-white rounded-2xl border border-gray-200 p-5">
-          <p className="text-sm font-semibold text-gray-700 mb-4">פירוט שווי נכסים</p>
-          <div className="space-y-3">
+      {/* ── Breakdown ── */}
+      <div className="bg-white rounded-2xl border border-gray-200 p-5">
+        <p className="text-sm font-semibold text-gray-700 mb-4">
+          פירוט שווי נכסים
+          {forexLoading && <span className="text-gray-300 text-xs font-normal mr-2">טוען שער מטח...</span>}
+          {!forexLoading && <span className="text-gray-400 text-xs font-normal mr-2">1$ = ₪{forexRate.toFixed(2)}</span>}
+        </p>
 
-            {summary.realEstateValueILS > 0 && (
-              <div className="flex items-center gap-3">
-                <span className="w-24 text-xs text-gray-500 shrink-0">נדל"ן</span>
-                <div className="flex-1 bg-gray-100 rounded-full h-3 overflow-hidden">
-                  <div
-                    className="bg-blue-500 h-full rounded-full"
-                    style={{ width: `${summary.totalAssetsILS > 0 ? (summary.realEstateValueILS / summary.totalAssetsILS) * 100 : 0}%` }}
-                  />
-                </div>
-                <span className="text-xs font-semibold text-gray-700 w-28 text-left shrink-0">
-                  {fILS(summary.realEstateValueILS)}
-                  <span className="text-gray-400 font-normal mr-1">
-                    ({summary.totalAssetsILS > 0 ? ((summary.realEstateValueILS / summary.totalAssetsILS) * 100).toFixed(0) : 0}%)
-                  </span>
-                </span>
-              </div>
-            )}
+        {(() => {
+          // Build ordered rows — positive rows for scale, loans shown separately
+          const rows: { label: string; color: string; valueILS: number; sub?: string }[] = [];
 
-            {hasStockData && (
-              <div className="flex items-center gap-3">
-                <span className="w-24 text-xs text-gray-500 shrink-0">שוק ההון</span>
-                <div className="flex-1 bg-gray-100 rounded-full h-3 overflow-hidden">
-                  <div
-                    className="bg-indigo-500 h-full rounded-full"
-                    style={{ width: `${summary.totalAssetsILS > 0 ? (stockPortfolioILS / summary.totalAssetsILS) * 100 : 0}%` }}
-                  />
-                </div>
-                <span className="text-xs font-semibold text-gray-700 w-28 text-left shrink-0">
-                  {fILS(stockPortfolioILS)}
-                  <span className="text-gray-400 font-normal mr-1">
-                    ({summary.totalAssetsILS > 0 ? ((stockPortfolioILS / summary.totalAssetsILS) * 100).toFixed(0) : 0}%)
-                  </span>
-                </span>
-              </div>
-            )}
+          if (summary.realEstateValueILS > 0)
+            rows.push({ label: '🏠 שווי נכסים', color: 'bg-blue-500', valueILS: summary.realEstateValueILS });
 
-            {summary.savingsValueILS > 0 && (
-              <div className="flex items-center gap-3">
-                <span className="w-24 text-xs text-gray-500 shrink-0">חסכונות</span>
-                <div className="flex-1 bg-gray-100 rounded-full h-3 overflow-hidden">
-                  <div
-                    className="bg-green-500 h-full rounded-full"
-                    style={{ width: `${summary.totalAssetsILS > 0 ? (summary.savingsValueILS / summary.totalAssetsILS) * 100 : 0}%` }}
-                  />
-                </div>
-                <span className="text-xs font-semibold text-gray-700 w-28 text-left shrink-0">
-                  {fILS(summary.savingsValueILS)}
-                  <span className="text-gray-400 font-normal mr-1">
-                    ({summary.totalAssetsILS > 0 ? ((summary.savingsValueILS / summary.totalAssetsILS) * 100).toFixed(0) : 0}%)
-                  </span>
-                </span>
-              </div>
-            )}
+          if (hasStockData)
+            rows.push({ label: '📈 שוק ההון', color: 'bg-indigo-500', valueILS: stockPortfolioILS });
 
-            {totalBankILS > 0 && (
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center gap-3">
-                  <span className="w-24 text-xs text-gray-500 shrink-0">
-                    עו"ש
-                    {forexLoading && <span className="text-gray-300 mr-1 text-xs"> ⟳</span>}
-                  </span>
-                  <div className="flex-1 bg-gray-100 rounded-full h-3 overflow-hidden flex">
-                    {/* ILS portion */}
-                    {bankBalanceILS > 0 && (
-                      <div
-                        className="bg-teal-500 h-full"
-                        style={{ width: `${summary.totalAssetsILS > 0 ? (bankBalanceILS / summary.totalAssetsILS) * 100 : 0}%` }}
-                      />
-                    )}
-                    {/* USD portion */}
-                    {bankBalanceUSDinILS > 0 && (
-                      <div
-                        className="bg-teal-300 h-full"
-                        style={{ width: `${summary.totalAssetsILS > 0 ? (bankBalanceUSDinILS / summary.totalAssetsILS) * 100 : 0}%` }}
-                      />
-                    )}
+          if (bankBalanceILS > 0)
+            rows.push({ label: '💵 עו"ש שקלים', color: 'bg-teal-500', valueILS: bankBalanceILS });
+
+          if (bankBalanceUSD > 0)
+            rows.push({
+              label: '💲 עו"ש דולרים',
+              color: 'bg-teal-300',
+              valueILS: bankBalanceUSDinILS,
+              sub: `${fUSD(bankBalanceUSD)} × ${forexRate.toFixed(2)}`,
+            });
+
+          if (summary.savingsValueILS > 0)
+            rows.push({ label: '💰 חסכונות', color: 'bg-green-500', valueILS: summary.savingsValueILS });
+
+          const maxPositive = Math.max(...rows.map(r => r.valueILS), 1);
+
+          return (
+            <div className="space-y-2.5">
+              {rows.map(row => (
+                <div key={row.label} className="flex items-center gap-3">
+                  <span className="w-32 text-xs text-gray-600 shrink-0">{row.label}</span>
+                  <div className="flex-1 bg-gray-100 rounded-full h-2.5 overflow-hidden">
+                    <div
+                      className={`${row.color} h-full rounded-full transition-all`}
+                      style={{ width: `${(row.valueILS / maxPositive) * 100}%` }}
+                    />
                   </div>
-                  <span className="text-xs font-semibold text-gray-700 w-28 text-left shrink-0">
-                    {fILS(totalBankILS)}
-                    <span className="text-gray-400 font-normal mr-1">
-                      ({summary.totalAssetsILS > 0 ? ((totalBankILS / summary.totalAssetsILS) * 100).toFixed(0) : 0}%)
-                    </span>
-                  </span>
+                  <div className="text-right w-36 shrink-0">
+                    <span className="text-xs font-semibold text-gray-800">{fILS(row.valueILS)}</span>
+                    {row.sub && <p className="text-xs text-gray-400">{row.sub}</p>}
+                  </div>
                 </div>
-                {/* ILS / USD breakdown */}
-                <div className="flex gap-4 pr-[6.5rem] text-xs text-gray-400">
-                  {bankBalanceILS > 0 && (
-                    <span className="flex items-center gap-1">
-                      <span className="w-2 h-2 rounded-full bg-teal-500 inline-block" />
-                      ₪ {fILS(bankBalanceILS)}
-                    </span>
-                  )}
-                  {bankBalanceUSD > 0 && (
-                    <span className="flex items-center gap-1">
-                      <span className="w-2 h-2 rounded-full bg-teal-300 inline-block" />
-                      {fUSD(bankBalanceUSD)} → {fILS(bankBalanceUSDinILS)}
-                      <span className="text-gray-300">({forexRate.toFixed(2)} ₪/$)</span>
-                    </span>
-                  )}
-                </div>
-              </div>
-            )}
+              ))}
 
-            {summary.totalLoansILS > 0 && (
-              <div className="flex items-center gap-3 pt-2 border-t border-gray-100">
-                <span className="w-24 text-xs text-red-400 shrink-0">התחייבויות</span>
-                <div className="flex-1 bg-gray-100 rounded-full h-3 overflow-hidden">
-                  <div
-                    className="bg-red-400 h-full rounded-full"
-                    style={{ width: `${summary.totalAssetsILS > 0 ? Math.min(100, (summary.totalLoansILS / summary.totalAssetsILS) * 100) : 0}%` }}
-                  />
+              {summary.totalLoansILS > 0 && (
+                <div className="flex items-center gap-3 pt-2 border-t border-gray-100 mt-1">
+                  <span className="w-32 text-xs text-red-500 shrink-0">🏦 הלוואות לתשלום</span>
+                  <div className="flex-1 bg-gray-100 rounded-full h-2.5 overflow-hidden">
+                    <div
+                      className="bg-red-400 h-full rounded-full"
+                      style={{ width: `${Math.min(100, (summary.totalLoansILS / maxPositive) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="text-right w-36 shrink-0">
+                    <span className="text-xs font-semibold text-red-500">-{fILS(summary.totalLoansILS)}</span>
+                  </div>
                 </div>
-                <span className="text-xs font-semibold text-red-500 w-28 text-left shrink-0">
-                  -{fILS(summary.totalLoansILS)}
+              )}
+
+              {/* Net worth summary line */}
+              <div className="flex items-center justify-between pt-3 border-t border-gray-100 mt-1">
+                <span className="text-sm text-gray-500">שווי נקי (נכסים פחות התחייבויות)</span>
+                <span className={`text-lg font-bold ${summary.netWorthILS >= 0 ? 'text-gray-900' : 'text-red-600'}`}>
+                  {fILS(summary.netWorthILS)}
                 </span>
               </div>
-            )}
-          </div>
-
-          {/* Net worth summary line */}
-          <div className="mt-4 pt-3 border-t border-gray-100 flex items-center justify-between">
-            <span className="text-sm text-gray-500">שווי נקי (נכסים פחות התחייבויות)</span>
-            <span className={`text-lg font-bold ${summary.netWorthILS >= 0 ? 'text-gray-900' : 'text-red-600'}`}>
-              {fILS(summary.netWorthILS)}
-            </span>
-          </div>
-        </div>
-      )}
+            </div>
+          );
+        })()}
+      </div>
 
       {/* ── Quick nav ── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
