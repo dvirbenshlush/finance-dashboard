@@ -473,7 +473,11 @@ const PortfolioTab: FC = () => {
   // Fetch USD/ILS historical rates whenever any transactions change.
   // Falls back to just today's date when there are no transactions (needed for cash-only forex conversion).
   useEffect(() => {
-    const allDates = [...transactions, ...manualStoredTxs].map(t => t.date).sort();
+    const isValidDate = (d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d);
+    const allDates = [...transactions, ...manualStoredTxs]
+      .map(t => t.date)
+      .filter(isValidDate)
+      .sort();
     const today = new Date().toISOString().slice(0, 10);
     const from = allDates[0] ?? today;
     const to   = today;
