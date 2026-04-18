@@ -222,9 +222,11 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigat
   const [expandSection, setExpandSection] = useState<Record<string, 'costs' | 'mortgage' | null>>({});
   const [editingCost,   setEditingCost]   = useState<{ assetId: string; cost: PropertyCost } | null>(null);
   const [addingCostFor, setAddingCostFor] = useState<string | null>(null);
-  const [costDraft,     setCostDraft]     = useState<Partial<PropertyCost & { amount: string }>>({});
+  type CostDraft = Omit<Partial<PropertyCost>, 'amount'> & { amount?: string };
+  const [costDraft,     setCostDraft]     = useState<CostDraft>({});
   const [addingDocFor,  setAddingDocFor]  = useState<string | null>(null);
-  const [docDraft,      setDocDraft]      = useState<Partial<PropertyDoc & { amount: string }>>({});
+  type DocDraft = Omit<Partial<PropertyDoc>, 'amount'> & { amount?: string };
+  const [docDraft,      setDocDraft]      = useState<DocDraft>({});
   const [pendingFile,   setPendingFile]   = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 

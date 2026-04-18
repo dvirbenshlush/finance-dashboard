@@ -1,4 +1,4 @@
-import React, { type FC, useState, useMemo, useRef, type ReactNode } from 'react';
+import { type FC, useState, useMemo, useRef, type ReactNode } from 'react';
 import type { Portfolio, MortgageTrack } from '../../types';
 
 // ── Formatters ────────────────────────────────────────────────────────────────

@@ -58,7 +58,7 @@ const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate })
     })
       .then(r => r.json())
       .then((data: Record<string, number>) => {
-        const rate = data[today] ?? Object.values(data).at(-1);
+        const vals = Object.values(data); const rate = data[today] ?? vals[vals.length - 1];
         if (rate && rate > 0) setForexRate(rate);
       })
       .catch(() => {/* keep fallback */})

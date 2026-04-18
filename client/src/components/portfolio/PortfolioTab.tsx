@@ -963,7 +963,7 @@ const PortfolioTab: FC<PortfolioTabProps> = ({ onValueUpdate }) => {
             <h3 className="text-sm font-semibold text-gray-700 mb-3">הקצאת תיק לפי נייר ערך</h3>
             <ResponsiveContainer width="100%" height={240}>
               <PieChart>
-                <Pie data={allocationData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={90} label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}>
+                <Pie data={allocationData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={90} label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}>
                   {allocationData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
                 </Pie>
                 <Tooltip formatter={(v) => fmt(v as number)} />
