@@ -1,15 +1,18 @@
-import { type FC, useMemo } from 'react';
+import { type FC, useMemo, useState, useEffect } from 'react';
 import type { Portfolio } from '../../types';
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
 const fILS = (v: number) =>
   new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 0 }).format(v);
 
-const fPct = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+const fUSD = (v: number) =>
+  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(v);
 
-const USD_TO_ILS = 3.73;
-const toILS = (value: number, currency: 'ILS' | 'USD') =>
-  currency === 'USD' ? value * USD_TO_ILS : value;
+const FALLBACK_RATE = 3.73; // used only until live rate loads
+const toILS = (value: number, currency: 'ILS' | 'USD', rate: number) =>
+  currency === 'USD' ? value * rate : value;
+
+const BASE = 'http://localhost:3001/api';
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 const KPI: FC<{
@@ -44,6 +47,24 @@ interface HomeTabProps {
 // ── Main component ─────────────────────────────────────────────────────────────
 const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate }) => {
 
+  // Live forex rate — fetched from server on mount
+  const [forexRate, setForexRate] = useState<number>(FALLBACK_RATE);
+  const [forexLoading, setForexLoading] = useState(true);
+  useEffect(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const token = localStorage.getItem('otzar_token') ?? '';
+    fetch(`${BASE}/portfolio/forex-rates?from=${today}&to=${today}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(r => r.json())
+      .then((data: Record<string, number>) => {
+        const rate = data[today] ?? Object.values(data).at(-1);
+        if (rate && rate > 0) setForexRate(rate);
+      })
+      .catch(() => {/* keep fallback */})
+      .finally(() => setForexLoading(false));
+  }, []);
+
   // Bank account balances entered manually in the cashflow tab
   const bankBalanceILS = useMemo(() => {
     const raw = localStorage.getItem('otzar_bank_balance');
@@ -53,7 +74,7 @@ const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate })
     const raw = localStorage.getItem('otzar_bank_balance_usd');
     return raw ? parseFloat(raw) || 0 : 0;
   }, []);
-  const bankBalanceUSDinILS = bankBalanceUSD * USD_TO_ILS;
+  const bankBalanceUSDinILS = bankBalanceUSD * forexRate;
   const totalBankILS = bankBalanceILS + bankBalanceUSDinILS;
 
   const summary = useMemo(() => {
@@ -62,16 +83,16 @@ const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate })
 
     // Real estate: gross value and equity (value minus all outstanding loans)
     const realEstateValueILS = realEstateAssets.reduce(
-      (s, a) => s + toILS(a.value, a.currency), 0
+      (s, a) => s + toILS(a.value, a.currency, forexRate), 0
     );
     const totalLoansILS = portfolio.loans.reduce(
-      (s, l) => s + toILS(l.outstanding, l.currency), 0
+      (s, l) => s + toILS(l.outstanding, l.currency, forexRate), 0
     );
     const realEstateEquityILS = realEstateValueILS - totalLoansILS;
 
     // Savings (pension, keren hishtalmut, etc.)
     const savingsValueILS = savingsAssets.reduce(
-      (s, a) => s + toILS(a.value, a.currency), 0
+      (s, a) => s + toILS(a.value, a.currency, forexRate), 0
     );
 
     // Total gross assets (everything we own)
@@ -94,7 +115,7 @@ const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate })
       netWorthILS,
       ltvPct,
     };
-  }, [portfolio, stockPortfolioILS, totalBankILS]);
+  }, [portfolio, stockPortfolioILS, totalBankILS, forexRate]);
 
   const hasStockData = stockPortfolioILS > 0;
 
@@ -219,20 +240,51 @@ const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate })
             )}
 
             {totalBankILS > 0 && (
-              <div className="flex items-center gap-3">
-                <span className="w-24 text-xs text-gray-500 shrink-0">עו"ש</span>
-                <div className="flex-1 bg-gray-100 rounded-full h-3 overflow-hidden">
-                  <div
-                    className="bg-teal-500 h-full rounded-full"
-                    style={{ width: `${summary.totalAssetsILS > 0 ? (totalBankILS / summary.totalAssetsILS) * 100 : 0}%` }}
-                  />
-                </div>
-                <span className="text-xs font-semibold text-gray-700 w-28 text-left shrink-0">
-                  {fILS(totalBankILS)}
-                  <span className="text-gray-400 font-normal mr-1">
-                    ({summary.totalAssetsILS > 0 ? ((totalBankILS / summary.totalAssetsILS) * 100).toFixed(0) : 0}%)
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center gap-3">
+                  <span className="w-24 text-xs text-gray-500 shrink-0">
+                    עו"ש
+                    {forexLoading && <span className="text-gray-300 mr-1 text-xs"> ⟳</span>}
                   </span>
-                </span>
+                  <div className="flex-1 bg-gray-100 rounded-full h-3 overflow-hidden flex">
+                    {/* ILS portion */}
+                    {bankBalanceILS > 0 && (
+                      <div
+                        className="bg-teal-500 h-full"
+                        style={{ width: `${summary.totalAssetsILS > 0 ? (bankBalanceILS / summary.totalAssetsILS) * 100 : 0}%` }}
+                      />
+                    )}
+                    {/* USD portion */}
+                    {bankBalanceUSDinILS > 0 && (
+                      <div
+                        className="bg-teal-300 h-full"
+                        style={{ width: `${summary.totalAssetsILS > 0 ? (bankBalanceUSDinILS / summary.totalAssetsILS) * 100 : 0}%` }}
+                      />
+                    )}
+                  </div>
+                  <span className="text-xs font-semibold text-gray-700 w-28 text-left shrink-0">
+                    {fILS(totalBankILS)}
+                    <span className="text-gray-400 font-normal mr-1">
+                      ({summary.totalAssetsILS > 0 ? ((totalBankILS / summary.totalAssetsILS) * 100).toFixed(0) : 0}%)
+                    </span>
+                  </span>
+                </div>
+                {/* ILS / USD breakdown */}
+                <div className="flex gap-4 pr-[6.5rem] text-xs text-gray-400">
+                  {bankBalanceILS > 0 && (
+                    <span className="flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-teal-500 inline-block" />
+                      ₪ {fILS(bankBalanceILS)}
+                    </span>
+                  )}
+                  {bankBalanceUSD > 0 && (
+                    <span className="flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-teal-300 inline-block" />
+                      {fUSD(bankBalanceUSD)} → {fILS(bankBalanceUSDinILS)}
+                      <span className="text-gray-300">({forexRate.toFixed(2)} ₪/$)</span>
+                    </span>
+                  )}
+                </div>
               </div>
             )}
 
