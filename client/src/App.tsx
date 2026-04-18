@@ -7,6 +7,7 @@ import LoansTab from './components/loans/LoansTab';
 import SavingsTab from './components/savings/SavingsTab';
 import CalendarTab from './components/calendar/CalendarTab';
 import DealTab from './components/deal/DealTab';
+import HomeTab from './components/home/HomeTab';
 import AuthPage from './components/auth/AuthPage';
 import type { Transaction, TransactionCategory, Portfolio } from './types';
 import { api } from './services/api';
@@ -64,8 +65,9 @@ function loadCachedPortfolio(): Portfolio {
 // ─── Main dashboard (only rendered when authenticated) ────────────────────────
 
 function Dashboard({ userEmail, onLogout }: { userEmail: string; onLogout: () => void }) {
-  const [activeTab, setActiveTab] = useState<TabId>('cashflow' as TabId);
+  const [activeTab, setActiveTab] = useState<TabId>('home' as TabId);
   const [dealAssetId, setDealAssetId] = useState<string | null>(null);
+  const [stockPortfolioILS, setStockPortfolioILS] = useState<number>(0);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [portfolio, setPortfolio] = useState<Portfolio>(() => loadCachedPortfolio());
   const [dbStatus, setDbStatus] = useState<'loading' | 'ready' | 'offline'>('loading');
@@ -346,6 +348,13 @@ function Dashboard({ userEmail, onLogout }: { userEmail: string; onLogout: () =>
       )}
 
       <main className="max-w-6xl mx-auto px-4 py-6">
+        {activeTab === 'home' && (
+          <HomeTab
+            portfolio={portfolio}
+            stockPortfolioILS={stockPortfolioILS}
+            onNavigate={(tab) => setActiveTab(tab as TabId)}
+          />
+        )}
         {activeTab === 'cashflow' && (
           <CashflowTab
             transactions={filteredTransactions}
@@ -356,7 +365,9 @@ function Dashboard({ userEmail, onLogout }: { userEmail: string; onLogout: () =>
             categorizeError={categorizeError}
           />
         )}
-        {activeTab === 'stock_portfolio' && <PortfolioTab />}
+        {activeTab === 'stock_portfolio' && (
+          <PortfolioTab onValueUpdate={setStockPortfolioILS} />
+        )}
         {activeTab === 'assets' && (
           <AssetsTab
             portfolio={portfolio}

@@ -1,8 +1,9 @@
 import { type FC } from 'react';
 
-export type TabId = 'cashflow' | 'stock_portfolio' | 'assets' | 'loans' | 'savings' | 'calendar' | 'deal';
+export type TabId = 'home' | 'cashflow' | 'stock_portfolio' | 'assets' | 'loans' | 'savings' | 'calendar' | 'deal';
 
 const TABS = [
+  { id: 'home' as TabId,             label: 'עמוד הבית',          icon: '🏡' },
   { id: 'cashflow' as TabId,         label: 'תזרים מזומנים',      icon: '📊' },
   { id: 'stock_portfolio' as TabId,  label: 'שוק ההון',           icon: '📈' },
   { id: 'calendar' as TabId,         label: 'לוח שנה',            icon: '📅' },

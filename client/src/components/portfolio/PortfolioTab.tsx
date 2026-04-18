@@ -264,7 +264,11 @@ const AIAnalysisPanel: FC<{ analysis: PortfolioAIAnalysis }> = ({ analysis }) =>
 
 // ── Main tab ──────────────────────────────────────────────────────────────────
 
-const PortfolioTab: FC = () => {
+interface PortfolioTabProps {
+  onValueUpdate?: (totalILS: number) => void;
+}
+
+const PortfolioTab: FC<PortfolioTabProps> = ({ onValueUpdate }) => {
   const inputRef = useRef<HTMLInputElement>(null);
   const [transactions, setTransactions] = useState<StockTransaction[]>([]);
   const [loadingStored, setLoadingStored] = useState(true);
@@ -558,6 +562,12 @@ const PortfolioTab: FC = () => {
     return { investedILS, proceedsILS, dividendsILS, feesILS, currentValueILS, currentRate, totalReturnILS, cashILS };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forexRates, transactions, manualStoredTxs, totals.totalCurrentValue, cashBalance]);
+
+  // Notify parent with total ILS value whenever it changes
+  useEffect(() => {
+    if (ilsSummary && onValueUpdate) onValueUpdate(ilsSummary.currentValueILS);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ilsSummary?.currentValueILS]);
 
   // Fetch live quotes whenever held symbols change
   useEffect(() => {
