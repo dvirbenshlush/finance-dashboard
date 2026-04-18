@@ -1,4 +1,5 @@
 import { type FC, Fragment, useRef, useState, useMemo, useEffect } from 'react';
+import { usePersistedState } from '../../hooks/usePersistedState';
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend,
@@ -289,12 +290,9 @@ const PortfolioTab: FC<PortfolioTabProps> = ({ onValueUpdate }) => {
   const [quotesError, setQuotesError]     = useState<string | null>(null);
   const [quotesUpdated, setQuotesUpdated] = useState<Date | null>(null);
 
-  // Manual transactions (persisted in localStorage; replaces old ManualPosition aggregate)
-  const [manualStoredTxs, setManualStoredTxs] = useState<StockTransaction[]>(() => {
+  // Manual transactions (persisted in DB + localStorage)
+  const manualDefault = (() => {
     try {
-      const raw = localStorage.getItem(LS_MANUAL_TXS);
-      if (raw) return JSON.parse(raw) as StockTransaction[];
-      // One-time migration from legacy ManualPosition format
       const legacy = localStorage.getItem(LS_MANUAL_LEGACY);
       if (legacy) {
         const old = JSON.parse(legacy) as LegacyManualPosition[];
@@ -307,30 +305,22 @@ const PortfolioTab: FC<PortfolioTabProps> = ({ onValueUpdate }) => {
           quantity: m.quantityHeld,
           price: m.avgCostPerShare,
           amount: m.avgCostPerShare * m.quantityHeld,
-          currency: 'USD',
+          currency: 'USD' as const,
         }));
       }
     } catch { /* ignore */ }
-    return [];
-  });
+    return [] as StockTransaction[];
+  })();
+  const [manualStoredTxs, setManualStoredTxs] = usePersistedState<StockTransaction[]>(LS_MANUAL_TXS, manualDefault);
 
-  const saveManualTxs = (next: StockTransaction[]) => {
-    setManualStoredTxs(next);
-    localStorage.setItem(LS_MANUAL_TXS, JSON.stringify(next));
-  };
+  const saveManualTxs = (next: StockTransaction[]) => setManualStoredTxs(next);
 
   // ── Uninvested cash ───────────────────────────────────────────────────────────
   const LS_CASH = 'otzar_cash_balance';
-  const [cashBalance, setCashBalance] = useState<{ usd: number; ils: number }>(() => {
-    try { return JSON.parse(localStorage.getItem('otzar_cash_balance') ?? 'null') ?? { usd: 0, ils: 0 }; }
-    catch { return { usd: 0, ils: 0 }; }
-  });
+  const [cashBalance, setCashBalance] = usePersistedState<{ usd: number; ils: number }>(LS_CASH, { usd: 0, ils: 0 });
   const [editingCash, setEditingCash] = useState<{ field: 'usd' | 'ils'; value: string } | null>(null);
 
-  const saveCash = (next: { usd: number; ils: number }) => {
-    setCashBalance(next);
-    localStorage.setItem(LS_CASH, JSON.stringify(next));
-  };
+  const saveCash = (next: { usd: number; ils: number }) => setCashBalance(next);
 
   const commitCashEdit = () => {
     if (!editingCash) return;
@@ -359,15 +349,11 @@ const PortfolioTab: FC<PortfolioTabProps> = ({ onValueUpdate }) => {
   type OverrideField = 'quantityHeld' | 'avgCostPerShare' | 'realizedPnL' | 'dividends';
   type PositionOverrides = Partial<Record<OverrideField, number>>;
   const LS_OVERRIDES = 'otzar_position_overrides';
-  const [positionOverrides, setPositionOverrides] = useState<Record<string, PositionOverrides>>(
-    () => { try { return JSON.parse(localStorage.getItem('otzar_position_overrides') ?? '{}'); } catch { return {}; } }
-  );
+  const [positionOverrides, setPositionOverrides] = usePersistedState<Record<string, PositionOverrides>>(LS_OVERRIDES, {});
   const [editingCell, setEditingCell] = useState<{ symbol: string; field: OverrideField; value: string } | null>(null);
 
   const saveOverride = (symbol: string, field: OverrideField, val: number) => {
-    const next = { ...positionOverrides, [symbol]: { ...(positionOverrides[symbol] ?? {}), [field]: val } };
-    setPositionOverrides(next);
-    localStorage.setItem(LS_OVERRIDES, JSON.stringify(next));
+    setPositionOverrides({ ...positionOverrides, [symbol]: { ...(positionOverrides[symbol] ?? {}), [field]: val } });
   };
 
   const startEdit = (symbol: string, field: OverrideField, current: number) =>
@@ -816,7 +802,6 @@ const PortfolioTab: FC<PortfolioTabProps> = ({ onValueUpdate }) => {
               localStorage.removeItem(LS_SERVER_TXS);
               saveManualTxs([]);
               setPositionOverrides({});
-              localStorage.removeItem(LS_OVERRIDES);
               setExpandedSymbols(new Set());
               setForexRates({});
             }}

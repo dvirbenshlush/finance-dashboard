@@ -3,6 +3,7 @@ import type { Transaction, TransactionCategory } from '../../types';
 import { CATEGORY_LABELS } from '../categorization/CategorizationTab';
 import CategorizationTab from '../categorization/CategorizationTab';
 import DualFileUpload from '../upload/DualFileUpload';
+import { usePersistedState } from '../../hooks/usePersistedState';
 
 interface CashflowTabProps {
   transactions: Transaction[];
@@ -168,42 +169,25 @@ const CashflowTab: FC<CashflowTabProps> = ({
   transactions, onTransactionsLoaded,
   onCategoryUpdate, onCategorizeAll, categorizing, categorizeError,
 }) => {
-  const [monthlyGoal, setMonthlyGoal] = useState<number>(
-    () => parseFloat(localStorage.getItem(LS_GOAL) ?? '0') || 0
-  );
-  const [cashBalance, setCashBalance] = useState<number>(() => {
-    // Migrate from old key (otzar_cash_balance stored a plain number; migrate once)
-    const newVal = localStorage.getItem(LS_CASH);
-    if (newVal !== null) return parseFloat(newVal) || 0;
-    const oldRaw = localStorage.getItem('otzar_cash_balance');
-    if (oldRaw !== null) {
-      const n = parseFloat(oldRaw) || 0; // plain number only — ignore JSON objects
-      if (!isNaN(n) && n > 0) { localStorage.setItem(LS_CASH, String(n)); }
-      return n;
-    }
-    return 0;
-  });
-  const [cashBalanceUSD, setCashBalanceUSD] = useState<number>(
-    () => parseFloat(localStorage.getItem(LS_CASH_USD) ?? '0') || 0
-  );
-  const [goalInput,     setGoalInput]     = useState(monthlyGoal > 0    ? String(monthlyGoal)    : '');
-  const [cashInput,     setCashInput]     = useState(cashBalance > 0    ? String(cashBalance)    : '');
-  const [cashInputUSD,  setCashInputUSD]  = useState(cashBalanceUSD > 0 ? String(cashBalanceUSD) : '');
+  const [monthlyGoal,   setMonthlyGoal]   = usePersistedState<number>(LS_GOAL, 0);
+  const [cashBalance,   setCashBalance]   = usePersistedState<number>(LS_CASH, 0);
+  const [cashBalanceUSD, setCashBalanceUSD] = usePersistedState<number>(LS_CASH_USD, 0);
+
+  const [goalInput,    setGoalInput]    = useState(monthlyGoal > 0    ? String(monthlyGoal)    : '');
+  const [cashInput,    setCashInput]    = useState(cashBalance > 0    ? String(cashBalance)    : '');
+  const [cashInputUSD, setCashInputUSD] = useState(cashBalanceUSD > 0 ? String(cashBalanceUSD) : '');
 
   const saveGoal = (val: string) => {
     const n = parseFloat(val.replace(/[,\s]/g, '')) || 0;
     setMonthlyGoal(n);
-    localStorage.setItem(LS_GOAL, String(n));
   };
   const saveCash = (val: string) => {
     const n = parseFloat(val.replace(/[,\s]/g, '')) || 0;
     setCashBalance(n);
-    localStorage.setItem(LS_CASH, String(n));
   };
   const saveCashUSD = (val: string) => {
     const n = parseFloat(val.replace(/[,\s]/g, '')) || 0;
     setCashBalanceUSD(n);
-    localStorage.setItem(LS_CASH_USD, String(n));
   };
 
   const today = new Date();

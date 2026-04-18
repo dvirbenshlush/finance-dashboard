@@ -1,4 +1,5 @@
 import { type FC, useState, useRef, useMemo } from 'react';
+import { usePersistedState } from '../../hooks/usePersistedState';
 import type { Asset, Loan, MortgageTrack, Portfolio } from '../../types';
 import { api } from '../../services/api';
 
@@ -203,9 +204,9 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigat
     return portfolio.assets.length > 0 ? portfolio.assets : DEFAULT_ASSETS;
   });
 
-  const [allCosts,     setAllCosts]     = useState<Record<string, PropertyCost[]>>(() => loadLS(LS_COSTS,     {}));
-  const [allDocs,      setAllDocs]      = useState<Record<string, PropertyDoc[]>> (() => loadLS(LS_DOCS,      {}));
-  const [propSettings, setPropSettings] = useState<Record<string, PropSettings>>  (() => loadLS(LS_PROP_SETS, {}));
+  const [allCosts,     setAllCosts]     = usePersistedState<Record<string, PropertyCost[]>>(LS_COSTS,     {});
+  const [allDocs,      setAllDocs]      = usePersistedState<Record<string, PropertyDoc[]>> (LS_DOCS,      {});
+  const [propSettings, setPropSettings] = usePersistedState<Record<string, PropSettings>>  (LS_PROP_SETS, {});
 
   // Load holding years from DealTab settings for projection KPIs
   const dealHoldingYears = useMemo(() => {
@@ -284,9 +285,7 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigat
 
   // ── Cost helpers ───────────────────────────────────────────────────────────
   const saveCosts = (assetId: string, costs: PropertyCost[]) => {
-    const next = { ...allCosts, [assetId]: costs };
-    setAllCosts(next);
-    localStorage.setItem(LS_COSTS, JSON.stringify(next));
+    setAllCosts({ ...allCosts, [assetId]: costs });
   };
 
   const commitCost = (assetId: string, isEdit: boolean) => {
@@ -312,9 +311,7 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigat
 
   // ── Doc helpers ────────────────────────────────────────────────────────────
   const saveDocs = (assetId: string, docs: PropertyDoc[]) => {
-    const next = { ...allDocs, [assetId]: docs };
-    setAllDocs(next);
-    localStorage.setItem(LS_DOCS, JSON.stringify(next));
+    setAllDocs({ ...allDocs, [assetId]: docs });
   };
 
   const commitDoc = (assetId: string) => {
@@ -338,9 +335,7 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigat
     propSettings[id] ?? { appreciationRate: 3, vacancyMonths: 0 };
 
   const updateSettings = (id: string, patch: Partial<PropSettings>) => {
-    const next = { ...propSettings, [id]: { ...getSettings(id), ...patch } };
-    setPropSettings(next);
-    localStorage.setItem(LS_PROP_SETS, JSON.stringify(next));
+    setPropSettings({ ...propSettings, [id]: { ...getSettings(id), ...patch } });
   };
 
   // ── Mortgage track helpers ─────────────────────────────────────────────────

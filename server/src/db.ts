@@ -91,6 +91,12 @@ export async function initDb(): Promise<void> {
       hit_count       INTEGER     NOT NULL DEFAULT 1,
       updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key        TEXT        PRIMARY KEY,
+      data       TEXT        NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
   `);
   console.log('[DB] Tables ready');
 }

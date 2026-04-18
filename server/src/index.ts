@@ -7,6 +7,7 @@ import classifyRouter from './routes/classify';
 import portfolioRouter from './routes/portfolio';
 import pdfRouter from './routes/pdf';
 import authRouter from './routes/auth';
+import settingsRouter from './routes/settings';
 import { requireAuth } from './middleware/auth';
 import { initDb } from './db';
 
@@ -32,6 +33,7 @@ app.use('/api/gemini', geminiRouter);
 app.use('/api/classify', classifyRouter);
 app.use('/api/portfolio', portfolioRouter);
 app.use('/api/pdf', pdfRouter);
+app.use('/api/settings', settingsRouter);
 
 initDb()
   .then(() => {

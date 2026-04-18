@@ -1,4 +1,5 @@
 import { type FC, useState, useMemo, useRef, type ReactNode } from 'react';
+import { usePersistedState } from '../../hooks/usePersistedState';
 import type { Portfolio, MortgageTrack } from '../../types';
 
 // ── Formatters ────────────────────────────────────────────────────────────────
@@ -234,7 +235,7 @@ interface DealTabProps {
 const USD_TO_ILS = 3.73;
 
 const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange, focusAssetId }) => {
-  const [d, setDRaw]    = useState<DealInputs>(loadDeal);
+  const [d, setDRaw]    = usePersistedState<DealInputs>(LS_DEAL, loadDeal());
   const [sub, setSub]   = useState<SubTab>('basic');
   const [page, setPage] = useState(0);
   const [dealName, setDealName]           = useState('');
@@ -289,11 +290,7 @@ const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange, focusAssetId 
   }
 
   const set = (patch: Partial<DealInputs>) => {
-    setDRaw(prev => {
-      const next = { ...prev, ...patch };
-      localStorage.setItem(LS_DEAL, JSON.stringify(next));
-      return next;
-    });
+    setDRaw(prev => ({ ...prev, ...patch }));
   };
 
   const addExpense = () => {

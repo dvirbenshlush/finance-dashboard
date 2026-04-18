@@ -96,6 +96,16 @@ export const api = {
       body: JSON.stringify({ base64, docType, mimeType }),
     }),
 
+  // --- Settings (persistent key-value store) ---
+  getSettings: () => request<Record<string, unknown>>('/settings'),
+  setSetting: (key: string, value: unknown) =>
+    request<{ saved: boolean }>(`/settings/${encodeURIComponent(key)}`, {
+      method: 'PUT',
+      body: JSON.stringify(value),
+    }),
+  deleteSetting: (key: string) =>
+    request<{ deleted: boolean }>(`/settings/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+
   // Classify Excel file via pure LLM classifier
   classifyExcel: (base64: string, filename: string) =>
     request<{
