@@ -44,11 +44,17 @@ interface HomeTabProps {
 // ── Main component ─────────────────────────────────────────────────────────────
 const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate }) => {
 
-  // Bank account balance entered manually in the cashflow tab
+  // Bank account balances entered manually in the cashflow tab
   const bankBalanceILS = useMemo(() => {
     const raw = localStorage.getItem('otzar_bank_balance');
     return raw ? parseFloat(raw) || 0 : 0;
   }, []);
+  const bankBalanceUSD = useMemo(() => {
+    const raw = localStorage.getItem('otzar_bank_balance_usd');
+    return raw ? parseFloat(raw) || 0 : 0;
+  }, []);
+  const bankBalanceUSDinILS = bankBalanceUSD * USD_TO_ILS;
+  const totalBankILS = bankBalanceILS + bankBalanceUSDinILS;
 
   const summary = useMemo(() => {
     const realEstateAssets = portfolio.assets.filter(a => a.type === 'real_estate');
@@ -69,10 +75,10 @@ const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate })
     );
 
     // Total gross assets (everything we own)
-    const totalAssetsILS = realEstateValueILS + savingsValueILS + stockPortfolioILS + bankBalanceILS;
+    const totalAssetsILS = realEstateValueILS + savingsValueILS + stockPortfolioILS + totalBankILS;
 
     // Net worth = assets minus liabilities
-    const netWorthILS = realEstateEquityILS + savingsValueILS + stockPortfolioILS + bankBalanceILS;
+    const netWorthILS = realEstateEquityILS + savingsValueILS + stockPortfolioILS + totalBankILS;
 
     // LTV across all real estate
     const ltvPct = realEstateValueILS > 0
@@ -88,7 +94,7 @@ const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate })
       netWorthILS,
       ltvPct,
     };
-  }, [portfolio, stockPortfolioILS, bankBalanceILS]);
+  }, [portfolio, stockPortfolioILS, totalBankILS]);
 
   const hasStockData = stockPortfolioILS > 0;
 
@@ -142,7 +148,10 @@ const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate })
             summary.realEstateValueILS > 0 ? `נדל"ן ${fILS(summary.realEstateValueILS)}` : null,
             stockPortfolioILS > 0          ? `שוק ההון ${fILS(stockPortfolioILS)}`       : null,
             summary.savingsValueILS > 0    ? `חסכונות ${fILS(summary.savingsValueILS)}`  : null,
-            bankBalanceILS > 0             ? `עו"ש ${fILS(bankBalanceILS)}`              : null,
+            totalBankILS > 0 ? [
+              `עו"ש ${fILS(bankBalanceILS)}`,
+              bankBalanceUSD > 0 ? `+ $${bankBalanceUSD.toLocaleString()} (${fILS(bankBalanceUSDinILS)})` : null,
+            ].filter(Boolean).join(' ') : null,
           ].filter(Boolean).join(' · ')}
           color="text-gray-900"
           bg="bg-gray-50"
@@ -209,19 +218,19 @@ const HomeTab: FC<HomeTabProps> = ({ portfolio, stockPortfolioILS, onNavigate })
               </div>
             )}
 
-            {bankBalanceILS > 0 && (
+            {totalBankILS > 0 && (
               <div className="flex items-center gap-3">
                 <span className="w-24 text-xs text-gray-500 shrink-0">עו"ש</span>
                 <div className="flex-1 bg-gray-100 rounded-full h-3 overflow-hidden">
                   <div
                     className="bg-teal-500 h-full rounded-full"
-                    style={{ width: `${summary.totalAssetsILS > 0 ? (bankBalanceILS / summary.totalAssetsILS) * 100 : 0}%` }}
+                    style={{ width: `${summary.totalAssetsILS > 0 ? (totalBankILS / summary.totalAssetsILS) * 100 : 0}%` }}
                   />
                 </div>
                 <span className="text-xs font-semibold text-gray-700 w-28 text-left shrink-0">
-                  {fILS(bankBalanceILS)}
+                  {fILS(totalBankILS)}
                   <span className="text-gray-400 font-normal mr-1">
-                    ({summary.totalAssetsILS > 0 ? ((bankBalanceILS / summary.totalAssetsILS) * 100).toFixed(0) : 0}%)
+                    ({summary.totalAssetsILS > 0 ? ((totalBankILS / summary.totalAssetsILS) * 100).toFixed(0) : 0}%)
                   </span>
                 </span>
               </div>

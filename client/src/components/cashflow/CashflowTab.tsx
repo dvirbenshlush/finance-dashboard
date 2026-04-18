@@ -16,8 +16,9 @@ interface CashflowTabProps {
 const fmt = (v: number) =>
   new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 0 }).format(v);
 
-const LS_GOAL = 'otzar_monthly_goal';
-const LS_CASH = 'otzar_bank_balance'; // ILS bank account balance — distinct from PortfolioTab's otzar_cash_balance
+const LS_GOAL     = 'otzar_monthly_goal';
+const LS_CASH     = 'otzar_bank_balance';     // ILS bank account balance
+const LS_CASH_USD = 'otzar_bank_balance_usd'; // USD bank account balance
 
 // Category buckets
 const INCOME_CATS = new Set(['salary', 'rental_income', 'refund', 'transfer_in']);
@@ -182,8 +183,12 @@ const CashflowTab: FC<CashflowTabProps> = ({
     }
     return 0;
   });
-  const [goalInput, setGoalInput] = useState(monthlyGoal > 0 ? String(monthlyGoal) : '');
-  const [cashInput, setCashInput] = useState(cashBalance > 0 ? String(cashBalance) : '');
+  const [cashBalanceUSD, setCashBalanceUSD] = useState<number>(
+    () => parseFloat(localStorage.getItem(LS_CASH_USD) ?? '0') || 0
+  );
+  const [goalInput,     setGoalInput]     = useState(monthlyGoal > 0    ? String(monthlyGoal)    : '');
+  const [cashInput,     setCashInput]     = useState(cashBalance > 0    ? String(cashBalance)    : '');
+  const [cashInputUSD,  setCashInputUSD]  = useState(cashBalanceUSD > 0 ? String(cashBalanceUSD) : '');
 
   const saveGoal = (val: string) => {
     const n = parseFloat(val.replace(/[,\s]/g, '')) || 0;
@@ -194,6 +199,11 @@ const CashflowTab: FC<CashflowTabProps> = ({
     const n = parseFloat(val.replace(/[,\s]/g, '')) || 0;
     setCashBalance(n);
     localStorage.setItem(LS_CASH, String(n));
+  };
+  const saveCashUSD = (val: string) => {
+    const n = parseFloat(val.replace(/[,\s]/g, '')) || 0;
+    setCashBalanceUSD(n);
+    localStorage.setItem(LS_CASH_USD, String(n));
   };
 
   const today = new Date();
@@ -284,7 +294,7 @@ const CashflowTab: FC<CashflowTabProps> = ({
         </div>
 
         <div className="flex flex-col gap-1">
-          <label className="text-xs text-gray-500 font-medium">💵 יתרה בחשבון כרגע</label>
+          <label className="text-xs text-gray-500 font-medium">💵 יתרה בחשבון כרגע (₪)</label>
           <div className="flex items-center gap-1">
             <span className="text-sm text-gray-400">₪</span>
             <input
@@ -293,6 +303,21 @@ const CashflowTab: FC<CashflowTabProps> = ({
               onChange={e => setCashInput(e.target.value)}
               onBlur={e => saveCash(e.target.value)}
               placeholder="לדוג׳ 12000"
+              className="w-32 border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-gray-500 font-medium">💲 יתרה דולרית בחשבון</label>
+          <div className="flex items-center gap-1">
+            <span className="text-sm text-gray-400">$</span>
+            <input
+              type="number"
+              value={cashInputUSD}
+              onChange={e => setCashInputUSD(e.target.value)}
+              onBlur={e => saveCashUSD(e.target.value)}
+              placeholder="לדוג׳ 5000"
               className="w-32 border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
             />
           </div>
