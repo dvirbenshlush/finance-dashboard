@@ -65,6 +65,7 @@ function loadCachedPortfolio(): Portfolio {
 
 function Dashboard({ userEmail, onLogout }: { userEmail: string; onLogout: () => void }) {
   const [activeTab, setActiveTab] = useState<TabId>('cashflow' as TabId);
+  const [dealAssetId, setDealAssetId] = useState<string | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [portfolio, setPortfolio] = useState<Portfolio>(() => loadCachedPortfolio());
   const [dbStatus, setDbStatus] = useState<'loading' | 'ready' | 'offline'>('loading');
@@ -357,7 +358,11 @@ function Dashboard({ userEmail, onLogout }: { userEmail: string; onLogout: () =>
         )}
         {activeTab === 'stock_portfolio' && <PortfolioTab />}
         {activeTab === 'assets' && (
-          <AssetsTab portfolio={portfolio} onPortfolioChange={setPortfolio} />
+          <AssetsTab
+            portfolio={portfolio}
+            onPortfolioChange={setPortfolio}
+            onNavigateToDeal={(id) => { setDealAssetId(id); setActiveTab('deal' as TabId); }}
+          />
         )}
         {activeTab === 'loans' && (
           <LoansTab portfolio={portfolio} onPortfolioChange={setPortfolio} />
@@ -368,7 +373,13 @@ function Dashboard({ userEmail, onLogout }: { userEmail: string; onLogout: () =>
         {activeTab === 'calendar' && (
           <CalendarTab transactions={filteredTransactions} />
         )}
-        {activeTab === 'deal' && <DealTab portfolio={portfolio} onPortfolioChange={setPortfolio} />}
+        {activeTab === 'deal' && (
+          <DealTab
+            portfolio={portfolio}
+            onPortfolioChange={setPortfolio}
+            focusAssetId={dealAssetId}
+          />
+        )}
       </main>
     </div>
   );

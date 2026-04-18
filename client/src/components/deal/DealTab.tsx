@@ -224,9 +224,12 @@ const Tooltip: FC<{ text: string; children: ReactNode }> = ({ text, children }) 
 interface DealTabProps {
   portfolio: Portfolio;
   onPortfolioChange: (p: Portfolio) => void;
+  focusAssetId?: string | null;
 }
 
-const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange }) => {
+const USD_TO_ILS = 3.73;
+
+const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange, focusAssetId }) => {
   const [d, setDRaw]    = useState<DealInputs>(loadDeal);
   const [sub, setSub]   = useState<SubTab>('basic');
   const [page, setPage] = useState(0);
@@ -411,9 +414,63 @@ const DealTab: FC<DealTabProps> = ({ portfolio, onPortfolioChange }) => {
   const amorSlice = c.amortSched.slice(page * AMOR_PAGE, (page + 1) * AMOR_PAGE);
   const amorPages = Math.ceil(c.amortSched.length / AMOR_PAGE);
 
+  // ── Asset focus summary ─────────────────────────────────────────────────────
+  const focusSummary = useMemo(() => {
+    if (!focusAssetId) return null;
+    const asset = portfolio.assets.find(a => a.id === focusAssetId);
+    if (!asset) return null;
+    const toILS = (v: number) => asset.currency === 'USD' ? v * USD_TO_ILS : v;
+    const linkedLoan = portfolio.loans.find(l => l.linkedAssetId === asset.id);
+    const loanPrincipal   = linkedLoan ? (linkedLoan.currency === 'USD' ? linkedLoan.principal   * USD_TO_ILS : linkedLoan.principal)   : 0;
+    const loanOutstanding = linkedLoan ? (linkedLoan.currency === 'USD' ? linkedLoan.outstanding * USD_TO_ILS : linkedLoan.outstanding) : 0;
+    const purchasePriceILS = toILS(asset.purchasePrice ?? asset.value);
+    const currentValueILS  = toILS(asset.value);
+    const invested  = purchasePriceILS - loanPrincipal;   // equity at purchase
+    const equityNow = currentValueILS  - loanOutstanding; // current equity
+    return { asset, invested, equityNow, loanOutstanding, currentValueILS };
+  }, [focusAssetId, portfolio.assets, portfolio.loans]);
+
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-4" dir="rtl">
+
+      {/* ── Asset focus panel ── */}
+      {focusSummary && (
+        <div className="bg-gradient-to-l from-blue-700 to-indigo-800 rounded-2xl p-5 text-white">
+          <p className="text-blue-200 text-xs mb-3 font-medium">סיכום נכס — {focusSummary.asset.name}</p>
+          <div className="flex flex-wrap gap-6 items-end">
+            <div>
+              <p className="text-white/60 text-xs mb-1">סכום שהושקע (הון עצמי)</p>
+              <p className="text-3xl font-bold">
+                {new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 0 }).format(focusSummary.invested)}
+              </p>
+              <p className="text-white/50 text-xs mt-0.5">מחיר רכישה פחות הלוואה מקורית</p>
+            </div>
+            <div className="w-px bg-white/20 self-stretch hidden md:block" />
+            <div>
+              <p className="text-white/60 text-xs mb-1">הון עצמי כרגע</p>
+              <p className={`text-3xl font-bold ${focusSummary.equityNow >= 0 ? 'text-green-200' : 'text-red-200'}`}>
+                {new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 0 }).format(focusSummary.equityNow)}
+              </p>
+              <p className="text-white/50 text-xs mt-0.5">שווי נוכחי פחות יתרת הלוואה</p>
+            </div>
+            {focusSummary.equityNow > focusSummary.invested && (
+              <>
+                <div className="w-px bg-white/20 self-stretch hidden md:block" />
+                <div>
+                  <p className="text-white/60 text-xs mb-1">רווח על ההון</p>
+                  <p className="text-2xl font-bold text-yellow-200">
+                    +{new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 0 }).format(focusSummary.equityNow - focusSummary.invested)}
+                  </p>
+                  <p className="text-white/50 text-xs mt-0.5">
+                    {((focusSummary.equityNow - focusSummary.invested) / focusSummary.invested * 100).toFixed(1)}% תשואה על הון
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Summary banner ── */}
       <div className={`rounded-2xl p-5 text-white ${

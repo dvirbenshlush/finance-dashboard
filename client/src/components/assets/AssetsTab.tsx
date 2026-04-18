@@ -183,10 +183,11 @@ const KPI: FC<{ label: string; value: string; sub?: string; color?: string; bg?:
 interface AssetsTabProps {
   portfolio: Portfolio;
   onPortfolioChange: (p: Portfolio) => void;
+  onNavigateToDeal?: (assetId: string) => void;
 }
 
 // ── Main component ─────────────────────────────────────────────────────────────
-const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange }) => {
+const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigateToDeal }) => {
   const [assets, setAssets] = useState<Asset[]>(() => {
     // Use portfolio assets if non-empty, else defaults
     return portfolio.assets.length > 0 ? portfolio.assets : DEFAULT_ASSETS;
@@ -462,6 +463,15 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange }) => {
                     <span className={`text-xs font-bold px-2 py-1 rounded-lg ${fc.totalAnnualILS >= 0 ? 'bg-blue-50 text-blue-600' : 'bg-red-50 text-red-600'}`}>
                       {fc.totalAnnualILS >= 0 ? '+' : ''}{fILS(fc.totalAnnualILS)} / שנה
                     </span>
+                    {onNavigateToDeal && (
+                      <button
+                        onClick={() => onNavigateToDeal(asset.id)}
+                        title="ניתוח עסקה"
+                        className="text-blue-500 hover:text-blue-700 hover:bg-blue-50 border border-blue-200 rounded-lg px-2.5 py-1 transition-colors text-xs font-medium"
+                      >
+                        ניתוח עסקה ↗
+                      </button>
+                    )}
                     <button
                       onClick={() => removeAsset(asset.id)}
                       title="הסר נכס"
