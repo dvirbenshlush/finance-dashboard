@@ -218,7 +218,7 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigat
   }, []);
 
   // UI state
-  const [expandedId,    setExpandedId]    = useState<string | null>(null);
+
   const [expandSection, setExpandSection] = useState<Record<string, 'costs' | 'mortgage' | null>>({});
   const [editingCost,   setEditingCost]   = useState<{ assetId: string; cost: PropertyCost } | null>(null);
   const [addingCostFor, setAddingCostFor] = useState<string | null>(null);
