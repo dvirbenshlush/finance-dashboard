@@ -99,10 +99,6 @@ function remainingBalance(principal: number, annualRate: number, monthlyPayment:
   return Math.max(0, principal * factor - monthlyPayment * (factor - 1) / r);
 }
 
-function loadLS<T>(key: string, fallback: T): T {
-  try { const r = localStorage.getItem(key); return r ? JSON.parse(r) as T : fallback; }
-  catch { return fallback; }
-}
 
 function toAnnualILS(c: PropertyCost): number {
   const amt = c.currency === 'USD' ? c.amount * USD_TO_ILS : c.amount;
