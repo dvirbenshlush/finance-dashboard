@@ -1,4 +1,4 @@
-const BASE = 'http://localhost:3001/api/auth';
+const BASE = (import.meta.env.VITE_API_URL ?? 'http://localhost:3001') + '/api/auth';
 const LS_TOKEN = 'otzar_token';
 const LS_EMAIL = 'otzar_email';
 

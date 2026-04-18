@@ -13,7 +13,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString();
 
-const BASE = 'http://localhost:3001/api';
+const BASE = (import.meta.env.VITE_API_URL ?? 'http://localhost:3001') + '/api';
 
 /** Fetch helper that attaches the JWT token — mirrors api.ts for direct fetch calls */
 const authFetch = (url: string, options: RequestInit = {}) =>

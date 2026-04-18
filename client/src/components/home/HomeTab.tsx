@@ -12,7 +12,7 @@ const FALLBACK_RATE = 3.73; // used only until live rate loads
 const toILS = (value: number, currency: 'ILS' | 'USD', rate: number) =>
   currency === 'USD' ? value * rate : value;
 
-const BASE = 'http://localhost:3001/api';
+const BASE = (import.meta.env.VITE_API_URL ?? 'http://localhost:3001') + '/api';
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 const KPI: FC<{

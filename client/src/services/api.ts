@@ -1,6 +1,6 @@
 import type { Transaction, Portfolio, GeminiInsight, TransactionCategory, StockTransaction } from '../types';
 
-const BASE = 'http://localhost:3001/api';
+const BASE = (import.meta.env.VITE_API_URL ?? 'http://localhost:3001') + '/api';
 
 const request = async <T>(path: string, options?: RequestInit): Promise<T> => {
   const token = localStorage.getItem('otzar_token');
