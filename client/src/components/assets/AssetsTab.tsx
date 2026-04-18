@@ -88,6 +88,16 @@ const TRACK_TYPE_COLORS: Record<MortgageTrack['trackType'], string> = {
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Standard mortgage balance after `months` payments: B = P(1+r)^n − M·((1+r)^n − 1)/r */
+function remainingBalance(principal: number, annualRate: number, monthlyPayment: number, months: number): number {
+  if (months <= 0 || principal <= 0) return principal;
+  const r = annualRate / 100 / 12;
+  if (r === 0) return Math.max(0, principal - monthlyPayment * months);
+  const factor = Math.pow(1 + r, months);
+  return Math.max(0, principal * factor - monthlyPayment * (factor - 1) / r);
+}
+
 function loadLS<T>(key: string, fallback: T): T {
   try { const r = localStorage.getItem(key); return r ? JSON.parse(r) as T : fallback; }
   catch { return fallback; }
@@ -517,13 +527,46 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigat
                     const projectedValue  = currentValueILS * Math.pow(1 + (settings.appreciationRate ?? 3) / 100, dealHoldingYears);
                     const projectedEquity = projectedValue - loanOutstandingILS;
 
-                    // Time-based: appreciation from purchase year to today
-                    const pyear       = asset.purchaseYear;
-                    const yearsHeld   = pyear ? Math.max(0, currentYear - pyear) : null;
+                    // Time-based equity: uses asset.value (manually editable) + amortization
+                    const pyear     = asset.purchaseYear;
+                    const yearsHeld = pyear ? Math.max(0, currentYear - pyear) : null;
+                    const monthsHeld = yearsHeld !== null ? yearsHeld * 12 : null;
+
+                    // Compute theoretical outstanding after monthsHeld payments via amortization
+                    const theoreticalOutstandingILS = (monthsHeld !== null && linkedLoans.length > 0)
+                      ? linkedLoans.reduce((total, loan) => {
+                          const lCur = loan.currency;
+                          if (loan.tracks && loan.tracks.length > 0) {
+                            return total + loan.tracks.reduce((ts, tr) => {
+                              const bal = remainingBalance(
+                                loanToILS(tr.principal, lCur),
+                                tr.interestRate,
+                                loanToILS(tr.monthlyPayment, lCur),
+                                monthsHeld,
+                              );
+                              return ts + bal;
+                            }, 0);
+                          }
+                          return total + remainingBalance(
+                            loanToILS(loan.principal, lCur),
+                            loan.interestRate,
+                            loanToILS(loan.monthlyPayment, lCur),
+                            monthsHeld,
+                          );
+                        }, 0)
+                      : loanOutstandingILS;
+
+                    const principalRepaid = loanPrincipalILS > 0
+                      ? Math.max(0, loanPrincipalILS - theoreticalOutstandingILS)
+                      : 0;
+                    // Use asset.value (user-editable שווי נוכחי) — not appreciation formula
+                    const equityToday = yearsHeld !== null
+                      ? currentValueILS - theoreticalOutstandingILS
+                      : null;
+                    // Appreciation formula kept as reference in sub-line
                     const appreciated = yearsHeld !== null
                       ? purchasePriceILS * Math.pow(1 + (settings.appreciationRate ?? 3) / 100, yearsHeld)
                       : null;
-                    const equityToday = appreciated !== null ? appreciated - loanOutstandingILS : null;
 
                     return (
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-1">
@@ -536,9 +579,15 @@ const AssetsTab: FC<AssetsTabProps> = ({ portfolio, onPortfolioChange, onNavigat
                         />
                         {equityToday !== null && (
                           <KPI
-                            label={`הון עצמי כיום (${yearsHeld} שנים, ${settings.appreciationRate ?? 3}%)`}
+                            label={`הון עצמי כיום (${yearsHeld} שנים)`}
                             value={fILS(equityToday)}
-                            sub={appreciated ? `שווי משוער ${fILS(appreciated)} · +${fILS(appreciated - purchasePriceILS)}` : undefined}
+                            sub={[
+                              `שווי ${fILS(currentValueILS)}`,
+                              principalRepaid > 0 ? `+ ${fILS(principalRepaid)} קרן ששולמה` : null,
+                              appreciated && Math.abs(appreciated - currentValueILS) > 1000
+                                ? `(צפי לפי ${settings.appreciationRate ?? 3}%: ${fILS(appreciated)})`
+                                : null,
+                            ].filter(Boolean).join(' · ')}
                             color={equityToday >= investedEquity ? 'text-emerald-700' : 'text-red-600'}
                             bg={equityToday >= investedEquity ? 'bg-emerald-50' : 'bg-red-50'}
                           />
